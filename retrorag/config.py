@@ -167,7 +167,24 @@ class LibrarySettings:
     def embed_signature(self) -> str:
         if self.embed_provider == "none":
             return "none"
+        if self.embed_provider == "builtin":
+            from .embeddings import resolve_builtin
+            return f"builtin:{resolve_builtin(self.embed_model) or self.embed_model}"
         return f"{self.embed_provider}:{self.embed_model}"
+
+    def normalise_builtin(self) -> bool:
+        """Built-in provider with an Ollama-style / missing model name: store the canonical name and that model's
+        prefixes. Returns True if anything changed."""
+        if self.embed_provider != "builtin":
+            return False
+        from .embeddings import BUILTIN_MODELS, resolve_builtin
+        name = resolve_builtin(self.embed_model)
+        if not name or (name == self.embed_model and not self.embed_url):
+            return False
+        spec = BUILTIN_MODELS[name]
+        self.embed_model, self.embed_url = name, ""
+        self.embed_doc_prefix, self.embed_query_prefix = spec["doc_prefix"], spec["query_prefix"]
+        return True
 
 
 # One-click presets for the embedding settings (provider, url, model, doc prefix, query prefix)

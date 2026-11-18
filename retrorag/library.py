@@ -186,6 +186,8 @@ class Library:
         self.root.mkdir(parents=True, exist_ok=True)
         (self.root / "systems").mkdir(exist_ok=True)
         self.db_path = self.root / "retrorag.db"
+        from .platform_util import is_network_path
+        self.on_network = is_network_path(self.root)
         self._local = threading.local()
         self.settings = LibrarySettings.load(self.root)
         if not (self.root / "library.json").exists():
@@ -200,7 +202,8 @@ class Library:
         if c is None:
             c = sqlite3.connect(self.db_path, timeout=30, check_same_thread=False)
             c.row_factory = sqlite3.Row
-            c.execute("PRAGMA journal_mode=WAL")
+            # WAL is fast but needs shared memory, which network shares (NAS over SMB/NFS) don't provide reliably
+            c.execute("PRAGMA journal_mode=" + ("DELETE" if self.on_network else "WAL"))
             c.execute("PRAGMA foreign_keys=ON")
             c.execute("PRAGMA synchronous=NORMAL")
             self._local.conn = c

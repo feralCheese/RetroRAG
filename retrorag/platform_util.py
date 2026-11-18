@@ -65,6 +65,29 @@ def reveal(p: str | Path) -> None:
         open_path(p.parent)
 
 
+def is_network_path(p: str | Path) -> bool:
+    """True for UNC paths and mapped network drives (Windows), or NFS/SMB/CIFS mounts (Linux/macOS)."""
+    s = str(Path(p).resolve())
+    if s.startswith("\\\\"):
+        return True
+    if IS_WINDOWS:
+        try:
+            import ctypes
+            return ctypes.windll.kernel32.GetDriveTypeW(s[:3]) == 4      # DRIVE_REMOTE
+        except Exception:
+            return False
+    try:
+        best, fstype = "", ""
+        with open("/proc/mounts") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) > 2 and s.startswith(parts[1]) and len(parts[1]) > len(best):
+                    best, fstype = parts[1], parts[2]
+        return fstype.startswith(("nfs", "cifs", "smb", "fuse.sshfs"))
+    except OSError:
+        return False
+
+
 def file_manager_name() -> str:
     return "Explorer" if IS_WINDOWS else "Finder" if IS_MAC else "file manager"
 

@@ -121,6 +121,25 @@ BUILTIN_MODELS = {
 }
 
 
+_ALIASES = {
+    "nomic-embed-text": "nomic-embed-text-v1.5", "nomic-embed-text:latest": "nomic-embed-text-v1.5",
+    "nomic-embed-text:v1.5": "nomic-embed-text-v1.5", "nomic-ai/nomic-embed-text-v1.5": "nomic-embed-text-v1.5",
+    "nomic": "nomic-embed-text-v1.5",
+    "bge-small": "bge-small-en-v1.5", "baai/bge-small-en-v1.5": "bge-small-en-v1.5", "bge-small-en": "bge-small-en-v1.5",
+}
+
+
+def resolve_builtin(name: str | None) -> str | None:
+    """Canonical built-in model name for what the user typed ('' -> default; Ollama-style names accepted);
+    None if it isn't a model RetroRAG can run itself."""
+    n = (name or "").strip()
+    if not n:
+        return BUILTIN_DEFAULT
+    if n in BUILTIN_MODELS:
+        return n
+    return _ALIASES.get(n.lower())
+
+
 def model_dirs(name: str) -> list:
     """Where a built-in model may live: shipped next to the app (offline / standalone builds), else the user cache."""
     from .config import app_dir, app_root
@@ -173,9 +192,11 @@ class BuiltinEmbedder(Embedder):
 
     def __init__(self, s: LibrarySettings):
         self.s = s
-        self.name = s.embed_model or BUILTIN_DEFAULT
-        if self.name not in BUILTIN_MODELS:
-            raise EmbeddingError(f"Unknown built-in model '{self.name}'. Available: {', '.join(BUILTIN_MODELS)}")
+        self.name = resolve_builtin(s.embed_model)
+        if self.name is None:
+            raise EmbeddingError(f"'{s.embed_model}' isn't a built-in model (built-in: {', '.join(BUILTIN_MODELS)}). "
+                                 "In Settings > Embeddings pick a 'Built-in' preset, or switch the provider back to "
+                                 "the server that has this model.")
         self.spec = BUILTIN_MODELS[self.name]
         self.signature = f"builtin:{self.name}"
 

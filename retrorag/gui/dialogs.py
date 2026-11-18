@@ -240,6 +240,7 @@ class SettingsDialog(QDialog):
         f.addRow("Preset", self.preset)
         self.provider = QComboBox(); self.provider.addItems(["builtin", "ollama", "openai", "fastembed", "none"])
         self.provider.setCurrentText(st.embed_provider)
+        self.provider.currentTextChanged.connect(self._provider_changed)
         f.addRow("Provider", self.provider)
         self.e_url = QLineEdit(st.embed_url)
         f.addRow("URL", self.e_url)
@@ -343,11 +344,40 @@ class SettingsDialog(QDialog):
         else:
             self.tess_status.setText("✗ " + info["message"])
 
+    def _provider_changed(self, prov: str):
+        """Switching provider: fill in sensible defaults unless the current values already suit it."""
+        from ..embeddings import BUILTIN_MODELS, resolve_builtin
+        model, url = self.e_model.text().strip(), self.e_url.text().strip()
+        defaults = {"builtin": "Built-in - nomic-embed-text", "ollama": "Ollama - nomic-embed-text",
+                    "openai": "Unsloth Studio"}
+        if prov == "builtin":
+            name = resolve_builtin(model)
+            if name and name == model and not url:
+                return
+            if name:     # e.g. 'nomic-embed-text' -> the same model, built in
+                spec = BUILTIN_MODELS[name]
+                self.e_model.setText(name); self.e_url.setText("")
+                self.e_dpre.setText(spec["doc_prefix"]); self.e_qpre.setText(spec["query_prefix"])
+                return
+        elif prov == "ollama" and url and resolve_builtin(model) != model:
+            return
+        elif prov == "openai" and url and "11434" not in url:
+            return
+        elif prov in ("none", "fastembed"):
+            return
+        key = next((k for k in EMBED_PRESETS if k.startswith(defaults.get(prov, "~"))), None)
+        if key:
+            p, u, m, dpre, qpre = EMBED_PRESETS[key]
+            self.e_url.setText(u); self.e_model.setText(m); self.e_dpre.setText(dpre); self.e_qpre.setText(qpre)
+
     def _apply_preset(self, i: int):
         if i <= 0:
             return
         prov, url, model, dpre, qpre = EMBED_PRESETS[self.preset.currentText()]
-        self.provider.setCurrentText(prov); self.e_url.setText(url); self.e_model.setText(model)
+        self.provider.blockSignals(True)
+        self.provider.setCurrentText(prov)
+        self.provider.blockSignals(False)
+        self.e_url.setText(url); self.e_model.setText(model)
         self.e_dpre.setText(dpre); self.e_qpre.setText(qpre)
 
     def _collect(self, st: LibrarySettings) -> LibrarySettings:
@@ -367,6 +397,7 @@ class SettingsDialog(QDialog):
         st.embed_api_key = self.e_key.text().strip()
         st.embed_doc_prefix = self.e_dpre.text()
         st.embed_query_prefix = self.e_qpre.text()
+        st.normalise_builtin()
         st.chunk_chars = self.chunk.value()
         st.chunk_overlap = self.overlap.value()
         st.embed_batch = self.e_batch.value()

@@ -157,6 +157,9 @@ def _maybe_switch_to_builtin(lib: Library, log: Log) -> None:
 def build_index(lib: Library, doc_ids: list[int] | None = None, *, rebuild_all: bool = False,
                 progress=None, cancel=None, log: Log = print) -> dict:
     lib.reload_settings()
+    if lib.settings.normalise_builtin():
+        lib.settings.save(lib.root)
+        log(f"Embedding model set to the built-in {lib.settings.embed_model}.")
     _maybe_switch_to_builtin(lib, log)
     sig = lib.settings.embed_signature()
     old_sig = lib.get_meta("embed_signature", "")
