@@ -37,6 +37,8 @@ ACTIONS = [("open_editor", "Proofread", "edit"), ("ocr", "Run OCR", "scan"),
 class DocPanel(QWidget):
     action = Signal(str, int)     # action name, doc id
     changed = Signal(int)
+    docs_added = Signal(list)     # documents added from a disk / tape image
+    create_image = Signal(int)    # system id
     open_doc = Signal(int)        # navigate to a linked document
     links_changed = Signal()
     cancel_job = Signal()
@@ -154,6 +156,12 @@ class DocPanel(QWidget):
         rv.addWidget(self.rel_list)
         v.addWidget(rel_box)
 
+        from .media_ui import ImageContents
+        self.image_box = ImageContents(lib)
+        self.image_box.changed.connect(self.docs_added.emit)
+        self.image_box.create_like.connect(self.create_image.emit)
+        v.addWidget(self.image_box)
+
         info_box = QGroupBox("File information")
         iv = QVBoxLayout(info_box)
         self.info = QTextBrowser()
@@ -199,6 +207,7 @@ class DocPanel(QWidget):
         self.rel_add.setIcon(theme.icon("link"))
         self.rel_suggest.setIcon(theme.icon("search"))
         self.rel_remove.setIcon(theme.icon("delete"))
+        self.image_box.apply_icons()
         if self.doc:
             self._fill_links(self.doc)
 
@@ -281,6 +290,7 @@ class DocPanel(QWidget):
             self.system_box.setCurrentIndex(-1)
             self.callout.hide()
             self.busy.clear()
+            self.image_box.show_doc(None)
             self.preview.show_doc(None)
             return
         self.title.setText(d.title); self.category.setCurrentText(d.category)
@@ -290,6 +300,8 @@ class DocPanel(QWidget):
         self.tags.setText(d.tags); self.source.setText(d.source_url); self.notes.setPlainText(d.notes)
         self._fill_info(d)
         self._fill_links(d)
+        self.image_box.lib = self.lib
+        self.image_box.show_doc(d)
         self.preview.show_doc(d)
 
     def refresh_current(self):
@@ -303,6 +315,8 @@ class DocPanel(QWidget):
         self.doc = d
         self._fill_info(d)
         self._fill_links(d)
+        self.image_box.lib = self.lib
+        self.image_box.show_doc(d)
         self.preview.show_doc(d)
 
     # ------------------------------------------------------------------ guidance

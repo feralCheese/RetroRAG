@@ -76,6 +76,25 @@ class SystemDialog(QDialog):
         f.addRow("Year", self.year)
         f.addRow("Type", self.kind)
         f.addRow("CPU", self.cpu)
+        from .media_ui import FormatPicker
+        from .. import media
+        if system is not None and lib is not None:
+            ids, how = lib.system_formats(system.id)
+            self.formats = FormatPicker(ids if how == "chosen" else None, ids, how)
+        else:
+            self.formats = FormatPicker(None, media.suggest_for_system(self.name.text(), self.aliases.text()))
+            sugg = lambda *_: self.formats.suggest(                                     # noqa: E731
+                media.suggest_for_system(self.name.text(), self.aliases.text(),
+                                         *([lib.system(self.parent_sys.currentData()).name]
+                                           if lib is not None and self.parent_sys.currentData() else []))
+                or media.suggest_for_system(self.manufacturer.text()))
+            for w in (self.name, self.aliases, self.manufacturer):
+                w.textChanged.connect(sugg)
+            self.parent_sys.currentIndexChanged.connect(sugg)
+        fbox = QGroupBox("Disk / tape formats")
+        fbox.setToolTip("The image formats this system uses - offered first when you create a disk or tape image")
+        QVBoxLayout(fbox).addWidget(self.formats)
+        f.addRow(fbox)
         f.addRow("Notes", self.notes)
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         bb.accepted.connect(self._ok)
@@ -89,7 +108,9 @@ class SystemDialog(QDialog):
         self.accept()
 
     def values(self) -> dict:
-        return {"name": self.name.text().strip(), "parent_id": self.parent_sys.currentData(),
+        fm = self.formats.value()
+        return {**({"media_formats": fm} if fm is not None else {}),
+                "name": self.name.text().strip(), "parent_id": self.parent_sys.currentData(),
                 "aliases": self.aliases.text().strip(),
                 "manufacturer": self.manufacturer.text().strip(), "year": self.year.text().strip(),
                 "kind": self.kind.currentText().strip(), "cpu": self.cpu.text().strip(),

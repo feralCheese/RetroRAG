@@ -145,6 +145,8 @@ class MainWindow(QMainWindow):
         self.doc_panel.changed.connect(lambda _id: (self.refresh_tree(), self.schedule_index()))
         self.doc_panel.open_doc.connect(self.select_doc)
         self.doc_panel.links_changed.connect(lambda: (self.refresh_stats(), self.schedule_index()))
+        self.doc_panel.docs_added.connect(self._after_image_add)
+        self.doc_panel.create_image.connect(lambda sid: self.create_image_dialog(sid))
         self.search_panel = SearchPanel(self.lib)
         self.search_panel.open_doc.connect(self.open_editor)
         self.tabs.addTab(self.home, "Home")
@@ -233,6 +235,11 @@ class MainWindow(QMainWindow):
             m.addAction(a)
         m.addAction("Force OCR on selected (all pages)", lambda: self.ocr_docs(self.selected_doc_ids(), force=True))
         m.addAction("Remove selected documents…", self.remove_selected_docs)
+        m.addSeparator()
+        a = m.addAction("Create disk / tape image…", lambda: self.create_image_dialog())
+        a.setShortcut(QKeySequence("Ctrl+Shift+D"))
+        a.setIcon(theme.icon("floppy"))
+        self._action_icons.append((a, "floppy"))
         m = mb.addMenu("&Index")
         m.addAction(self.a_index)
         m.addAction("Rebuild everything", lambda: self.build_index(True))
@@ -736,6 +743,7 @@ read a drawing.</p>
             m.addAction("Edit system…", self.edit_system)
             m.addAction("Add variant…", lambda: self.add_system(parent_id=key[1]))
             m.addAction("Move all its documents to…", self.move_selected_dialog)
+            m.addAction("Create disk / tape image…", lambda: self.create_image_dialog(key[1]))
             m.addSeparator()
             m.addAction("OCR everything that needs it", lambda: self.ocr_docs(
                 [d.id for d in self.lib.documents(key[1], where="needs_ocr=1")]))
@@ -752,6 +760,9 @@ read a drawing.</p>
                 m.addAction("Add files here…", self.add_files_dialog)
             if key[0] == "doc":
                 m.addAction("Show in folder", lambda: self.doc_action("show_folder", key[1]))
+                d = self.lib.document(key[1])
+                m.addAction("Put on a new disk / tape image…", lambda: self.create_image_dialog(
+                    d.system_id, [i for i in self.selected_doc_ids()] or [key[1]]))
             m.addSeparator()
             m.addAction("Move to system…", self.move_selected_dialog)
             m.addAction("Remove…", self.remove_selected_docs)
@@ -970,6 +981,26 @@ read a drawing.</p>
                     "retrorag.proc:add_folder_job", library=lib_root, system_id=s.id, category=v["category"],
                     folder=str(folder), copy=v["copy"], kinds=sorted(v["kinds"]) if v["kinds"] is not None else None),
                     on_done=self._after_add, verb=f"Adding folder {folder.name}")
+
+    def create_image_dialog(self, system_id: int | None = None, doc_ids: list[int] | None = None):
+        from .media_ui import CreateImageDialog
+        if not self._ensure_system():
+            return
+        if system_id is None:
+            s = self.current_system()
+            system_id = s.id if s else None
+        dlg = CreateImageDialog(self, self.lib, system_id, doc_ids)
+        if dlg.exec() and dlg.created_doc:
+            d = self.lib.document(dlg.created_doc)
+            self.log(f"Created disk / tape image '{d.title}'")
+            self.refresh_all()
+            self.select_doc(d.id)
+            self.schedule_index()
+
+    def _after_image_add(self, ids):
+        self.log(f"Added {len(ids)} file(s) from the disk / tape image to the library.")
+        self.refresh_all()
+        self.schedule_index()
 
     def _after_add(self, ids):
         self.log(f"Added {len(ids or [])} document(s).")

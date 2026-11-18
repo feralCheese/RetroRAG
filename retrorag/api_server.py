@@ -2,7 +2,7 @@
 
     REST:  http://127.0.0.1:8765/docs          (Swagger UI)   /openapi.json  (Open WebUI "tool server", etc.)
     MCP:   http://127.0.0.1:8766/mcp           (streamable HTTP: LM Studio, Open WebUI, Cursor, other MCP clients)
-All endpoints are read-only.
+Everything is read-only except POST /images, which builds a disk/tape image and adds it to the library.
 """
 from __future__ import annotations
 
@@ -32,6 +32,8 @@ def create_app(library: str | Path):
         limit: int = 8
         mode: str = "hybrid"
 
+    globals()["SearchRequest"] = SearchRequest      # FastAPI resolves (string) annotations in module globals
+
     def _search(query, system, category, limit, mode):
         lib.reload_settings()
         return [r.to_dict() for r in S.search(lib, query, k=max(1, min(limit, 50)), system=system,
@@ -41,7 +43,8 @@ def create_app(library: str | Path):
     def root():
         st = lib.stats()
         return {"name": "RetroRAG", "version": APP_VERSION, "library": str(lib.root), **st,
-                "endpoints": ["/search", "/systems", "/documents", "/documents/{id}/text", "/docs", "/openapi.json"]}
+                "endpoints": ["/search", "/systems", "/documents", "/documents/{id}/text", "/documents/{id}/image",
+                              "/media/formats", "/images", "/docs", "/openapi.json"]}
 
     @app.get("/search", operation_id="search_docs", summary="Search the retro documentation library")
     def search_get(q: str = Query(..., description="Question or keywords, e.g. 'VIC-II raster interrupt' or '$D012'"),
@@ -91,6 +94,91 @@ def create_app(library: str | Path):
         if not lib.document(doc_id):
             raise HTTPException(404, "not found")
         return {"doc_id": doc_id, "text": S.document_text(lib, doc_id, page_from, page_to, max_chars)}
+
+    # ------------------------------------------------------------------ disk / tape images
+    from fastapi import Response
+    from . import media, media_ops
+
+    def _img(doc_id: int):
+        d = lib.document(doc_id)
+        if not d:
+            raise HTTPException(404, "not found")
+        try:
+            return d, media_ops.open_doc(lib, d)
+        except media.MediaError as e:
+            raise HTTPException(422, str(e))
+
+    @app.get("/media/formats", operation_id="list_media_formats",
+             summary="Disk/tape image formats (and which ones a system uses)")
+    def media_formats(system: str | None = None):
+        out = {"formats": [f.describe() for f in media.all_formats()]}
+        if system:
+            s = lib.find_system(system)
+            if not s:
+                raise HTTPException(404, f"No system matching '{system}'")
+            ids, how = lib.system_formats(s.id)
+            out.update(system=s.name, system_formats=ids, system_formats_are=how)
+        return out
+
+    @app.get("/documents/{doc_id}/image", operation_id="list_image_contents",
+             summary="Directory of a disk or tape image")
+    def image_contents(doc_id: int):
+        d, img = _img(doc_id)
+        return {"doc_id": d.id, "title": d.title, **media_ops.image_info(img)}
+
+    @app.get("/documents/{doc_id}/image/file", operation_id="read_image_file",
+             summary="One file from a disk/tape image: as text (BASIC listing / text / hex dump) or raw bytes")
+    def image_file(doc_id: int, name: str = Query(..., description="File name as the directory shows it"),
+                   raw: bool = Query(False, description="true = download the exact bytes")):
+        d, img = _img(doc_id)
+        try:
+            e = img.find(name)
+        except media.MediaError as ex:
+            raise HTTPException(404, str(ex))
+        if raw:
+            fn = media_ops.host_name(img, e).split("/")[-1]
+            return Response(media_ops.export_bytes(img, e), media_type="application/octet-stream",
+                            headers={"Content-Disposition": f'attachment; filename="{fn}"'})
+        how, text = media.text_view(img, e)
+        return {**media_ops.entry_info(img, e), "shown_as": how, "text": text}
+
+    class ImageFile(BaseModel):
+        name: str = ""
+        text: str | None = None
+        base64: str | None = None
+        doc_id: int | None = None
+        basic: bool = False
+        type: str = ""
+        load: str | int | None = None
+        exec: str | int | None = None
+        autostart: int | None = None
+
+    class ImageRequest(BaseModel):
+        system: str
+        format: str
+        files: list[ImageFile]
+        label: str = ""
+        title: str | None = None
+        options: dict = {}
+
+    globals().update(ImageFile=ImageFile, ImageRequest=ImageRequest)
+
+    @app.post("/images", operation_id="create_image",
+              summary="Create a disk/tape image from text, BASIC source, base64 data or library documents")
+    def create_image(req: ImageRequest):
+        s = lib.find_system(req.system)
+        if not s:
+            raise HTTPException(404, f"No system matching '{req.system}'")
+        try:
+            fmt = media.get(req.format)
+            nfs, sources = media_ops.files_from_specs(lib, fmt, [f.model_dump(exclude_none=True) for f in req.files])
+            doc_id = media_ops.create_image_doc(lib, s, fmt.id, nfs, label=req.label, title=req.title,
+                                                options=req.options, source_doc_ids=sources, log=lambda m: None)
+        except (media.MediaError, ValueError) as e:
+            raise HTTPException(422, str(e))
+        d = lib.document(doc_id)
+        return {"doc_id": doc_id, "title": d.title, "path": str(lib.abspath(d.path)),
+                **media_ops.image_info(media_ops.open_doc(lib, d))}
 
     return app
 

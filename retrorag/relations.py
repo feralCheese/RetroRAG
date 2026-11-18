@@ -28,6 +28,7 @@ KINDS: dict[str, tuple[str, str]] = {
     "errata_for": ("Errata / corrections for", "Corrected by"),
     "revision_of": ("Newer revision of", "Superseded by"),
     "part_of": ("Part / chapter of", "Includes"),
+    "on_image": ("On disk / tape image", "Disk / tape image holding"),
 }
 SYMMETRIC = {"related"}
 

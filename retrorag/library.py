@@ -35,7 +35,8 @@ CREATE TABLE IF NOT EXISTS systems (
     aliases TEXT DEFAULT '',
     notes TEXT DEFAULT '',
     created TEXT,
-    parent_id INTEGER REFERENCES systems(id) ON DELETE SET NULL   -- this system is a variant of parent_id
+    parent_id INTEGER REFERENCES systems(id) ON DELETE SET NULL,  -- this system is a variant of parent_id
+    media_formats TEXT                -- disk/tape formats it uses, e.g. 'd64,d81' (NULL = not chosen: suggest)
 );
 
 CREATE TABLE IF NOT EXISTS documents (
@@ -145,6 +146,7 @@ class System:
     notes: str = ""
     created: str = ""
     parent_id: int | None = None      # variant of this system (None = top-level / family)
+    media_formats: str | None = None  # 'd64,d81' ... ; None = never chosen (formats are suggested from the name)
 
 
 @dataclass
@@ -200,6 +202,8 @@ class Library:
             cols = {r["name"] for r in c.execute("PRAGMA table_info(systems)")}
             if "parent_id" not in cols:   # libraries made before variants existed
                 c.execute("ALTER TABLE systems ADD COLUMN parent_id INTEGER REFERENCES systems(id) ON DELETE SET NULL")
+            if "media_formats" not in cols:   # ... or before disk/tape formats
+                c.execute("ALTER TABLE systems ADD COLUMN media_formats TEXT")
 
     # ------------------------------------------------------------------ plumbing
     def conn(self) -> sqlite3.Connection:
@@ -349,6 +353,8 @@ class Library:
                 f"INSERT INTO systems(name, slug, {', '.join(cols)}, created) VALUES (?,?,{','.join('?' * len(cols))},?)",
                 [name.strip(), slug, *vals, now_iso()])
             sid = cur.lastrowid
+        if kw.get("media_formats") is not None:
+            self.set_media_formats(sid, kw["media_formats"])
         s = self.system(sid)
         self.system_dir(s).mkdir(parents=True, exist_ok=True)
         if kw.get("parent_id"):
@@ -361,6 +367,8 @@ class Library:
             cur = self.system(system_id)
             if cur and cur.parent_id != kw["parent_id"]:
                 self.set_parent(system_id, kw["parent_id"])
+        if "media_formats" in kw:
+            self.set_media_formats(system_id, kw["media_formats"])
         allowed = {"name", "manufacturer", "year", "kind", "cpu", "aliases", "notes"}
         sets = {k: v for k, v in kw.items() if k in allowed}
         if not sets:
@@ -369,6 +377,37 @@ class Library:
             c.execute(f"UPDATE systems SET {', '.join(f'{k}=?' for k in sets)} WHERE id=?", [*sets.values(), system_id])
         # header chunks mention the system name -> mark docs stale
         self._touch_family(system_id)
+
+    # ------------------------------------------------------------------ disk / tape formats
+    def set_media_formats(self, system_id: int, formats) -> None:
+        """formats: list of ids or 'd64,d81'; None = forget the choice (suggest from the name again)."""
+        if formats is not None and not isinstance(formats, str):
+            formats = ",".join(formats)
+        if formats is not None:
+            from . import media
+            known = {f.id for f in media.all_formats()}
+            ids = [f.strip().lower().lstrip(".") for f in formats.split(",") if f.strip()]
+            bad = [f for f in ids if f not in known]
+            if bad:
+                raise ValueError(f"Unknown disk/tape format(s): {', '.join(bad)}. Known: {', '.join(sorted(known))}")
+            formats = ",".join(dict.fromkeys(ids))
+        with self.conn() as c:
+            c.execute("UPDATE systems SET media_formats=? WHERE id=?", (formats, system_id))
+
+    def system_formats(self, system_id: int) -> tuple[list[str], str]:
+        """Disk/tape formats for a system -> (ids, where from: 'chosen' | 'inherited' | 'suggested')."""
+        from . import media
+        s = self.system(system_id)
+        if s is None:
+            return [], "suggested"
+        if s.media_formats is not None:
+            return [f for f in s.media_formats.split(",") if f], "chosen"
+        for a in self.ancestors(system_id):
+            if a.media_formats is not None:
+                return [f for f in a.media_formats.split(",") if f], "inherited"
+        names = [s.name, s.aliases] + [a.name for a in self.ancestors(system_id)]
+        ids = media.suggest_for_system(*names) or media.suggest_for_system(s.manufacturer)
+        return ids, "suggested"
 
     def delete_system(self, system_id: int, delete_files: bool = False) -> str:
         """Remove a system and all its documents/chunks from the library.

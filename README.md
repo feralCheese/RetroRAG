@@ -11,9 +11,12 @@ and other AI systems (including locally hosted ones such as Unsloth Studio, Olla
 - **OCR** (Tesseract) turns scans into editable Markdown. Words below a confidence threshold are marked
   `{?w0rd|42?}` so you can find and fix them.
 - **Proofreading editor**: scan on the left, text on the right. The current line and word are highlighted on the scan.
-- **Binary files get an "info card"**: CRC32/MD5/SHA1, format, D64 directory listing, ZX TAP/TZX headers, Amiga ADF
-  volume name, iNES/Game Boy/Mega Drive headers, and embedded text strings from ROMs. An AI can then answer
-  "what's on this disk?" or "which Kickstart is this?".
+- **Binary files get an "info card"**: CRC32/MD5/SHA1, format, iNES/Game Boy/Mega Drive headers, and embedded
+  text strings from ROMs. An AI can then answer "which Kickstart is this?".
+- **Disk and tape images**: read, extract and create D64, D81 (Commodore), ADF (Amiga), ST and MSA (Atari ST), IMG
+  (PC/DOS), SSD, DSD and ADL (Acorn DFS/ADFS), TAP and TZX (ZX Spectrum tape) and MDR (Spectrum Microdrive).
+  Their directories, BASIC listings and text files are searchable, and an AI can build a new disk with a BASIC
+  program on it for you.
 - **Hybrid search**: keyword (BM25, with hex-address normalisation so `$D020`, `0xD020` and `D020h` all match)
   plus semantic (embeddings), merged by rank fusion.
 - **Connect AI**: MCP for Claude Desktop / Claude Code (stdio); MCP over HTTP for Unsloth Studio, LM Studio,
@@ -107,6 +110,7 @@ Windows 11-style light and dark themes using the Segoe Fluent icon set. *View �
    - Links matter most for documents search can't connect on its own: schematics and pinouts with little
      text (give them notes and tags too), emulator source vs. prose manuals, and errata or newer revisions.
 5. **⚙ Build index** (F5). This runs automatically after changes unless you turn it off in the Index menu.
+   Disk and tape images have their own tools; see [Disk and tape images](#disk-and-tape-images).
 6. Try queries in **Search test**. You see exactly what the AI receives.
 7. **🔌 Connect AI** shows ready-to-copy settings for this PC.
 
@@ -116,6 +120,36 @@ sidecar holding every word's position on the page, which the editor uses for hig
 
 **Scan cleanup.** *Auto* (the default) OCRs each page as-is. If mean confidence is below 80%, it retries with
 a strong median denoise and keeps the better result. This helps a lot with speckled photocopies.
+
+## Disk and tape images
+
+| Format | Files | Systems | Notes |
+|---|---|---|---|
+| Commodore 1541 / 1581 | `.d64` `.d81` | C64, C128, VIC-20, PET, C16, Plus/4 | PRG / SEQ / USR files; a PRG starts with its load address |
+| AmigaDOS | `.adf` | Amiga | reads OFS and FFS (DD and HD); writes OFS (Kickstart 1.x) or FFS, optionally bootable; folders |
+| Atari ST | `.st` `.msa` | Atari ST / STE / Falcon | TOS FAT12 floppy (PC-readable); MSA is the compressed form |
+| PC / DOS floppy | `.img` `.ima` | IBM PC and compatibles | FAT12, 360 KB to 2.88 MB; folders. Reading also handles FAT16 partitions and long file names |
+| Acorn DFS | `.ssd` `.dsd` | BBC Micro, Electron, Master | load / exec addresses, boot option; `.dsd` has two sides (drives 0 and 2) |
+| Acorn ADFS (old map) | `.adl` `.adm` `.ads` | BBC Master, Electron, Archimedes | folders, load / exec addresses, boot option |
+| ZX Spectrum tape | `.tap` `.tzx` | ZX Spectrum | Program (BASIC, with autostart line) and Bytes files; reading also lists turbo-loader blocks |
+| ZX Microdrive | `.mdr` | Spectrum + Interface 1 | new cartridges are saved as `.mdr` (the usual emulator extension); `.md` cartridges are recognised by their contents |
+
+- **Formats per system**: each system has a *Disk / tape formats* list in its dialog. It's suggested from the
+  name (Commodore 64 → D64, D81); tick the ones you use. Variants use their family's choice unless you set their own.
+- **What's on an image**: select a disk or tape image document. The Document tab shows its contents. **View**
+  shows a file: BASIC programs (Commodore, Spectrum and BBC) as a listing, text as text, and anything else as a
+  hex dump. **Extract…** saves files exactly as stored. Acorn files get `.inf` files holding their load and exec
+  addresses, and a Spectrum BASIC program is saved as a one-file `.tap` so its autostart line isn't lost.
+  **Add to library** adds files as documents of the same system, linked to the image: BASIC programs as their
+  listings, text as text.
+- **Making an image**: *Documents → Create disk / tape image…* (Ctrl+Shift+D), or right-click a system, or
+  right-click documents → *Put on a new disk / tape image…*. Add files from the PC or the library, type in a
+  **BASIC program** (tokenised for the machine, so `LOAD` and `RUN` / `CHAIN` work), or a text file. Set names,
+  types and load / exec / autostart where the format has them, then **Create in library** or **Save to file…**.
+  The dialog checks as you go that everything fits.
+- **Searchable**: an image's directory, BASIC listings and short text files go into its info card, so the AI can
+  answer "which disk has the sprite editor on it?".
+- **Command line**: `retrorag-cli image formats | list IMG | read IMG NAME | extract IMG --to DIR | create FORMAT OUT FILES… [--basic NAME=prog.bas] [--opt size=pc720]`.
 
 ---
 
@@ -135,6 +169,14 @@ Start the HTTP servers with **▶ Start servers** in the toolbar. You can make t
 
 MCP tools: `search_docs(query, system?, category?, limit, mode)`, `list_systems`, `list_documents`,
 `read_document(doc_id, page_from?, page_to?)`, `get_related(doc_id)`, `get_context(chunk_id)`.
+
+Disk and tape images: `list_media_formats(system?)`, `list_image_contents(doc_id)`,
+`read_image_file(doc_id, name, encoding=text|base64)`, `add_image_files_to_library(doc_id, names?)` and
+`create_image(system, format, files, label?, title?, options?)`. Each file is given as BASIC source
+(`{"name": "HELLO", "basic": true, "text": "10 PRINT \"HI\""}`), plain text, base64 bytes or the `doc_id` of a
+library document. The new image goes into the library (category *Disk & Tape Images*), and the tool returns its
+path. REST has the same: `GET /media/formats`, `GET /documents/{id}/image`, `GET /documents/{id}/image/file?name=…`
+(`&raw=true` downloads the file) and `POST /images`.
 
 Each search hit carries a short `related` list (title, relationship, doc id), so the AI can tell the SID
 chapter has a datasheet, a pinout and an emulator implementation, and fetch them only if needed.
@@ -234,6 +276,8 @@ retrorag-cli mcp [--http]                # MCP on stdio (what Claude Desktop run
 retrorag-cli export --markdown D:\out  |  --jsonl chunks.jsonl [--embeddings]
 retrorag-cli settings                    # show library settings
 retrorag-cli settings api_host=0.0.0.0   # change them (handy on a headless server)
+retrorag-cli image list game.d64         # disk / tape images: formats, list, read, extract, create
+retrorag-cli image create tap demo.tap --basic demo=demo.bas
 ```
 Add `--library <folder>` to any command to use a library other than the last-opened one.
 
@@ -243,8 +287,12 @@ Add `--library <folder>` to any command to use a library other than the last-ope
 - Semantic search loads all vectors into memory. That's fine for hundreds of thousands of chunks. Indexing a
   very large source tree (e.g. all of MAME) is slow to embed, so consider adding just the relevant drivers and
   devices.
-- Read-only servers; the REST API allows any origin (CORS) so browser-based tools can call it. Keep it on
-  127.0.0.1 or set an access token.
+- The servers are read-only apart from creating disk / tape images (and adding their files), which writes into
+  the library. The REST API allows any origin (CORS) so browser-based tools can call it. Keep it on 127.0.0.1 or
+  set an access token.
+- Disk and tape support covers ordinary sector images. Flux-level and copy-protection formats (G64, IPF, STX, WOZ,
+  SCP…) aren't opened, though they still get an info card. Commodore REL files and Spectrum array files can be
+  read but not created.
 
 ## Platforms
 

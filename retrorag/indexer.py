@@ -138,6 +138,32 @@ def embed_missing(lib: Library, progress=None, cancel=None, log: Log = print) ->
     return done
 
 
+def _refresh_media_cards(lib: Library, log: Log) -> None:
+    """Disk / tape images added before RetroRAG could read them have a basic info card: rebuild it with the
+    directory, BASIC listings and text files, so their contents become searchable."""
+    from . import media, media_ops
+    from .ingest import extract
+    exts = sorted(media.media_exts() | {".md"})
+    q = ",".join("?" * len(exts))
+    done = 0
+    for d in lib.documents(where=f"kind='binary' AND lower(ext) IN ({q})", params=exts):
+        try:
+            card = lib.abspath(d.text_path).read_text("utf-8", errors="replace") if d.text_path else ""
+        except OSError:
+            card = ""
+        if any(f"## {w} contents (" in card for w in ("Disk", "Tape", "Cartridge")):
+            continue
+        if media_ops.doc_format(lib, d) is None:
+            continue
+        try:
+            extract(lib, d, log=log)
+            done += 1
+        except Exception as e:
+            log(f"Could not read the image {d.title}: {e}")
+    if done:
+        log(f"Listed the contents of {done} disk / tape image(s).")
+
+
 def _convert_raw_rtf(lib: Library, log: Log) -> None:
     """RTF, Word and Excel files added before those formats were supported were indexed as raw RTF codes or as
     binary 'info cards': convert them to readable text now."""
@@ -184,6 +210,7 @@ def build_index(lib: Library, doc_ids: list[int] | None = None, *, rebuild_all: 
         log(f"Embedding model set to the built-in {lib.settings.embed_model}.")
     _maybe_switch_to_builtin(lib, log)
     _convert_raw_rtf(lib, log)
+    _refresh_media_cards(lib, log)
     sig = lib.settings.embed_signature()
     old_sig = lib.get_meta("embed_signature", "")
     c = lib.conn()

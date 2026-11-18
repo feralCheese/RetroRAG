@@ -27,6 +27,8 @@ FORMATS = {
     ".adl": "Acorn ADFS disk image", ".img": "Raw disk image", ".ima": "Raw floppy image", ".imd": "ImageDisk floppy image",
     ".td0": "Teledisk floppy image", ".hfe": "HxC floppy emulator image", ".scp": "SuperCard Pro flux image",
     ".kryoflux": "KryoFlux stream", ".mfm": "MFM disk image", ".vhd": "Virtual hard disk",
+    ".mdr": "ZX Microdrive cartridge image", ".ads": "Acorn ADFS S (160K) disk image", ".adm": "Acorn ADFS M (320K) disk image",
+    ".vfd": "Virtual floppy disk image", ".flp": "Floppy disk image",
     ".iso": "CD/DVD image", ".cue": "CD cue sheet", ".bin": "Raw binary (ROM/firmware/CD track)", ".chd": "MAME compressed hunks of data",
     # ROMs
     ".rom": "ROM image", ".nes": "NES iNES ROM", ".fds": "Famicom Disk System image", ".sfc": "Super Nintendo ROM", ".smc": "Super Nintendo ROM (copier header)",
@@ -196,21 +198,34 @@ def info_card(p: Path, title: str, system_name: str, category: str, hashes: dict
     if notes.strip():
         lines += ["", "## Notes", "", notes.strip()]
     sections: list[tuple[str, list[str]]] = []
-    if ext in (".d64",):
-        sections.append(("Directory", d64_listing(data)))
-    if ext == ".tap":
-        sections.append(("Tape contents", zx_tap_listing(data)))
-    if ext in (".tzx", ".cdt"):
-        sections.append(("Tape contents", tzx_info(data)))
-    if ext == ".adf":
-        sections.append(("Disk", adf_info(data)))
+    media_md = ""
+    try:
+        from . import media
+        fmt = media.detect(data, ext)
+        if fmt is not None:
+            img = fmt.open(data)
+            lines[5] = f"- **Format:** {fmt.name}"
+            media_md = media.listing_markdown(img)
+    except Exception as e:                    # a damaged image still gets the rest of its card
+        media_md = f"## Disk / tape contents\n\nCould not read the image: {e}\n"
+    if not media_md:
+        if ext in (".d64",):
+            sections.append(("Directory", d64_listing(data)))
+        if ext == ".tap":
+            sections.append(("Tape contents", zx_tap_listing(data)))
+        if ext in (".tzx", ".cdt"):
+            sections.append(("Tape contents", tzx_info(data)))
+        if ext == ".adf":
+            sections.append(("Disk", adf_info(data)))
     sections.append(("Header", rom_header_info(data, ext)))
     is_image = ext in {".d64", ".d71", ".d81", ".g64", ".adf", ".ipf", ".st", ".msa", ".atr", ".dsk", ".scp", ".hfe", ".woz", ".iso", ".chd"}
-    if not is_image:
+    if not is_image and not media_md:
         sections.append(("Embedded text strings", printable_strings(data, strings_min)))
     for head, body in sections:
         if body:
             fence = head in ("Directory", "Embedded text strings")
             lines += ["", f"## {head}", ""]
             lines += (["```"] + body + ["```"]) if fence else [f"- {b}" for b in body]
+    if media_md:
+        lines += ["", media_md.rstrip()]
     return "\n".join(lines) + "\n"
