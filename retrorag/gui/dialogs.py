@@ -1,0 +1,502 @@
+"""Dialogs: system editor, add files, remove system, settings, connect-AI."""
+from __future__ import annotations
+
+import json
+import os
+import secrets
+import shutil
+import sys
+from pathlib import Path
+
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
+                               QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPlainTextEdit,
+                               QPushButton, QRadioButton, QSpinBox, QTabWidget, QTextBrowser, QVBoxLayout, QWidget)
+
+from ..config import CATEGORIES, EMBED_PRESETS, SYSTEM_KINDS, AppSettings, LibrarySettings, app_root, is_portable
+from ..library import Library, System
+
+
+# =========================================================================== system
+class SystemDialog(QDialog):
+    def __init__(self, parent=None, system: System | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("Edit system" if system else "Add retro system")
+        self.setMinimumWidth(460)
+        f = QFormLayout(self)
+        self.name = QLineEdit(system.name if system else "")
+        self.name.setPlaceholderText("e.g. Commodore 64")
+        self.aliases = QLineEdit(system.aliases if system else "")
+        self.aliases.setPlaceholderText("e.g. C64, CBM 64, VIC-64  (used for search filters)")
+        self.manufacturer = QLineEdit(system.manufacturer if system else "")
+        self.year = QLineEdit(system.year if system else "")
+        self.kind = QComboBox(); self.kind.setEditable(True); self.kind.addItems(SYSTEM_KINDS)
+        if system and system.kind:
+            self.kind.setCurrentText(system.kind)
+        self.cpu = QLineEdit(system.cpu if system else "")
+        self.cpu.setPlaceholderText("e.g. MOS 6510 @ 1 MHz")
+        self.notes = QPlainTextEdit(system.notes if system else "")
+        self.notes.setFixedHeight(90)
+        f.addRow("Name*", self.name)
+        f.addRow("Aliases", self.aliases)
+        f.addRow("Manufacturer", self.manufacturer)
+        f.addRow("Year", self.year)
+        f.addRow("Type", self.kind)
+        f.addRow("CPU", self.cpu)
+        f.addRow("Notes", self.notes)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self._ok)
+        bb.rejected.connect(self.reject)
+        f.addRow(bb)
+
+    def _ok(self):
+        if not self.name.text().strip():
+            QMessageBox.warning(self, "Name required", "Please enter a system name.")
+            return
+        self.accept()
+
+    def values(self) -> dict:
+        return {"name": self.name.text().strip(), "aliases": self.aliases.text().strip(),
+                "manufacturer": self.manufacturer.text().strip(), "year": self.year.text().strip(),
+                "kind": self.kind.currentText().strip(), "cpu": self.cpu.text().strip(),
+                "notes": self.notes.toPlainText().strip()}
+
+
+class RemoveSystemDialog(QDialog):
+    def __init__(self, parent, system: System, n_docs: int, folder: Path):
+        super().__init__(parent)
+        self.setWindowTitle(f"Remove {system.name}")
+        v = QVBoxLayout(self)
+        v.addWidget(QLabel(f"<b>Remove '{system.name}'</b> and its {n_docs} document(s) from the library?"))
+        self.keep = QRadioButton("Keep the files on disk")
+        self.keep.setChecked(True)
+        keep_note = QLabel(f"Originals, OCR text and your corrections stay in:<br><code>{folder}</code><br>"
+                           "A <code>system.json</code> manifest is saved with them. Adding a system with the same "
+                           "name later (or using <i>Import system folder</i>) brings everything back.")
+        keep_note.setWordWrap(True); keep_note.setStyleSheet("margin-left:22px;color:gray")
+        self.delete = QRadioButton("Delete the files too")
+        del_note = QLabel("Permanently deletes the system's folder, including OCR text and corrections. "
+                          "Files that were linked in place (outside the library) are never deleted.")
+        del_note.setWordWrap(True); del_note.setStyleSheet("margin-left:22px;color:gray")
+        for w in (self.keep, keep_note, self.delete, del_note):
+            v.addWidget(w)
+        bb = QDialogButtonBox(QDialogButtonBox.Cancel)
+        self.ok = bb.addButton("Remove", QDialogButtonBox.DestructiveRole)
+        self.ok.clicked.connect(self._confirm)
+        bb.rejected.connect(self.reject)
+        v.addWidget(bb)
+        self.setMinimumWidth(520)
+
+    def _confirm(self):
+        if self.delete.isChecked() and QMessageBox.warning(
+                self, "Delete files", "This permanently deletes the files. Continue?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            return
+        self.accept()
+
+    @property
+    def delete_files(self) -> bool:
+        return self.delete.isChecked()
+
+
+# =========================================================================== add files
+class AddDialog(QDialog):
+    """Choose category / copy-vs-link / file kinds for files or a folder being added."""
+
+    def __init__(self, parent, systems: list[System], system: System | None, paths: list[Path], folder: bool):
+        super().__init__(parent)
+        self.setWindowTitle("Add folder" if folder else "Add files")
+        self.setMinimumWidth(520)
+        f = QFormLayout(self)
+        names = "\n".join(str(p) for p in paths[:8]) + (f"\n… and {len(paths) - 8} more" if len(paths) > 8 else "")
+        lbl = QLabel(names); lbl.setStyleSheet("color:gray"); lbl.setWordWrap(True)
+        f.addRow("Adding", lbl)
+        self.system = QComboBox()
+        for s in systems:
+            self.system.addItem(s.name, s.id)
+        if system:
+            self.system.setCurrentIndex(max(0, self.system.findData(system.id)))
+        f.addRow("System", self.system)
+        self.category = QComboBox(); self.category.setEditable(True); self.category.addItems(CATEGORIES)
+        self.category.setCurrentText(self._guess_category(paths, folder))
+        f.addRow("Category", self.category)
+        self.copy = QCheckBox("Copy into the library (recommended - keeps the library self-contained & portable)")
+        self.copy.setChecked(True)
+        f.addRow("", self.copy)
+        self.kinds = {}
+        if folder:
+            box = QGroupBox("Include file types")
+            h = QHBoxLayout(box)
+            for k, label, on in (("text", "Text/HTML", True), ("code", "Source code", True), ("pdf", "PDF", True),
+                                 ("image", "Images", True), ("binary", "Binaries/ROMs/disk images", True)):
+                cb = QCheckBox(label); cb.setChecked(on); h.addWidget(cb); self.kinds[k] = cb
+            self.category.currentTextChanged.connect(self._cat_changed)
+            self._cat_changed(self.category.currentText())
+            f.addRow(box)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self.accept); bb.rejected.connect(self.reject)
+        f.addRow(bb)
+
+    def _cat_changed(self, cat: str):
+        if not self.kinds:
+            return
+        src = cat == "Emulator Source"
+        self.kinds["image"].setChecked(not src)
+        self.kinds["binary"].setChecked(not src)
+
+    @staticmethod
+    def _guess_category(paths, folder) -> str:
+        from ..ingest import CODE_EXT
+        exts = {p.suffix.lower() for p in paths}
+        if folder:
+            return "Emulator Source"
+        if exts and exts <= {".d64", ".t64", ".tap", ".tzx", ".adf", ".dsk", ".atr", ".st", ".ssd", ".dsd", ".uef", ".cas", ".ipf", ".woz"}:
+            return "Disk & Tape Images"
+        if exts and exts <= {".rom", ".bin", ".hex", ".jed"}:
+            return "Firmware & ROMs"
+        if exts and exts <= CODE_EXT:
+            return "Emulator Source"
+        if exts and exts <= {".gif", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}:
+            return "Schematics"
+        return "User Guides & Manuals"
+
+    def values(self) -> dict:
+        kinds = {k for k, cb in self.kinds.items() if cb.isChecked()} if self.kinds else None
+        return {"system_id": self.system.currentData(), "category": self.category.currentText().strip() or "Other",
+                "copy": self.copy.isChecked(), "kinds": kinds}
+
+
+# =========================================================================== settings
+class SettingsDialog(QDialog):
+    def __init__(self, parent, app: AppSettings, lib: Library):
+        super().__init__(parent)
+        self.app, self.lib = app, lib
+        st = lib.settings
+        self.setWindowTitle("Settings")
+        self.setMinimumWidth(640)
+        v = QVBoxLayout(self)
+        tabs = QTabWidget(); v.addWidget(tabs)
+
+        # --- library
+        w = QWidget(); f = QFormLayout(w); tabs.addTab(w, "Library")
+        self.lib_path = QLineEdit(str(lib.root))
+        b = QPushButton("Browse…"); b.clicked.connect(self._browse_lib)
+        h = QHBoxLayout(); h.addWidget(self.lib_path); h.addWidget(b)
+        f.addRow("Library folder", h)
+        note = QLabel("A library is a self-contained folder (database + files). Copy it to another PC, or point "
+                      "this at a new folder to create a new library. Changing it switches library on OK.")
+        note.setWordWrap(True); note.setStyleSheet("color:gray")
+        f.addRow(note)
+        self.portable = QCheckBox("Portable mode (settings + default library stored next to the app)")
+        self.portable.setChecked(is_portable())
+        self.portable.setToolTip(f"Creates/removes {app_root() / 'portable.flag'}")
+        f.addRow(self.portable)
+        self.extract_zip = QCheckBox("Extract .zip archives when adding"); self.extract_zip.setChecked(st.extract_archives)
+        f.addRow(self.extract_zip)
+
+        # --- OCR
+        w = QWidget(); f = QFormLayout(w); tabs.addTab(w, "OCR")
+        self.tess = QLineEdit(st.tesseract_path or app.tesseract_path)
+        self.tess.setPlaceholderText("auto-detect (PATH, C:\\Program Files\\Tesseract-OCR)")
+        b = QPushButton("Browse…"); b.clicked.connect(self._browse_tess)
+        bt = QPushButton("Test"); bt.clicked.connect(self._test_tess)
+        h = QHBoxLayout(); h.addWidget(self.tess); h.addWidget(b); h.addWidget(bt)
+        f.addRow("tesseract.exe", h)
+        self.lang = QLineEdit(st.ocr_language); self.lang.setToolTip("e.g. eng, deu, eng+deu, jpn")
+        f.addRow("Language(s)", self.lang)
+        self.thresh = QSpinBox(); self.thresh.setRange(0, 100); self.thresh.setValue(st.low_conf_threshold)
+        self.thresh.setSuffix(" %")
+        self.thresh.setToolTip("Words recognised with confidence below this are marked {?word|NN?} for review")
+        f.addRow("Flag words below confidence", self.thresh)
+        self.dpi = QSpinBox(); self.dpi.setRange(100, 600); self.dpi.setValue(st.ocr_dpi)
+        f.addRow("PDF render DPI", self.dpi)
+        self.psm = QComboBox()
+        from .editor import PSM_CHOICES
+        for val, label in PSM_CHOICES:
+            self.psm.addItem(label, val)
+        self.psm.setCurrentIndex(max(0, self.psm.findData(st.ocr_psm)))
+        f.addRow("Default layout mode", self.psm)
+        from ..ocr import CLEANUP_CHOICES
+        self.cleanup = QComboBox()
+        for val, label in CLEANUP_CHOICES:
+            self.cleanup.addItem(label, val)
+        self.cleanup.setCurrentIndex(max(0, self.cleanup.findData(st.ocr_cleanup)))
+        f.addRow("Scan cleanup", self.cleanup)
+        self.upscale = QCheckBox("Upscale small images before OCR"); self.upscale.setChecked(st.ocr_upscale_small_images)
+        f.addRow(self.upscale)
+        self.min_chars = QSpinBox(); self.min_chars.setRange(0, 1000); self.min_chars.setValue(st.pdf_min_text_chars)
+        f.addRow("PDF page counts as scanned if text <", self.min_chars)
+        self.tess_status = QLabel(); self.tess_status.setWordWrap(True)
+        f.addRow(self.tess_status)
+
+        # --- embeddings
+        w = QWidget(); f = QFormLayout(w); tabs.addTab(w, "Embeddings")
+        self.preset = QComboBox(); self.preset.addItem("(choose a preset…)")
+        self.preset.addItems(list(EMBED_PRESETS))
+        self.preset.activated.connect(self._apply_preset)
+        f.addRow("Preset", self.preset)
+        self.provider = QComboBox(); self.provider.addItems(["ollama", "openai", "fastembed", "none"])
+        self.provider.setCurrentText(st.embed_provider)
+        f.addRow("Provider", self.provider)
+        self.e_url = QLineEdit(st.embed_url)
+        f.addRow("URL", self.e_url)
+        self.e_model = QLineEdit(st.embed_model)
+        f.addRow("Model", self.e_model)
+        self.e_key = QLineEdit(st.embed_api_key); self.e_key.setEchoMode(QLineEdit.Password)
+        self.e_key.setPlaceholderText("only for endpoints that need one (Unsloth Studio: Settings > API)")
+        f.addRow("API key", self.e_key)
+        self.e_dpre = QLineEdit(st.embed_doc_prefix); f.addRow("Document prefix", self.e_dpre)
+        self.e_qpre = QLineEdit(st.embed_query_prefix); f.addRow("Query prefix", self.e_qpre)
+        self.chunk = QSpinBox(); self.chunk.setRange(300, 8000); self.chunk.setValue(st.chunk_chars); self.chunk.setSuffix(" chars")
+        f.addRow("Chunk size", self.chunk)
+        self.overlap = QSpinBox(); self.overlap.setRange(0, 2000); self.overlap.setValue(st.chunk_overlap); self.overlap.setSuffix(" chars")
+        f.addRow("Chunk overlap", self.overlap)
+        bt = QPushButton("Test embeddings"); bt.clicked.connect(self._test_embed)
+        self.e_status = QLabel(); self.e_status.setWordWrap(True)
+        f.addRow(bt, self.e_status)
+        n = QLabel("Changing the model means every chunk is re-embedded on the next 'Build index'. "
+                   "The machine that answers queries must be able to reach the same model.")
+        n.setWordWrap(True); n.setStyleSheet("color:gray"); f.addRow(n)
+
+        # --- servers
+        # --- appearance
+        from .theme import PHOSPHOR_NAMES
+        w = QWidget(); f = QFormLayout(w); tabs.addTab(w, "Appearance")
+        self.theme_combo = QComboBox()
+        for key, label in (("system", "Follow Windows"), ("light", "Light"), ("dark", "Dark"),
+                           ("retro", "Retro - phosphor CRT")):
+            self.theme_combo.addItem(label, key)
+        self.theme_combo.setCurrentIndex(max(0, self.theme_combo.findData(app.theme)))
+        f.addRow("Theme", self.theme_combo)
+        self.phosphor = QComboBox()
+        for key, label in PHOSPHOR_NAMES.items():
+            self.phosphor.addItem(label, key)
+        self.phosphor.setCurrentIndex(max(0, self.phosphor.findData(app.retro_phosphor)))
+        f.addRow("Retro phosphor", self.phosphor)
+        self.scan = QCheckBox("Simulated scan lines and screen vignette"); self.scan.setChecked(app.retro_scanlines)
+        f.addRow("", self.scan)
+        self.rfont = QLineEdit(app.retro_font_file)
+        self.rfont.setPlaceholderText("built-in RetroRAG Phosphor pixel font")
+        bf = QPushButton("Browse…"); bf.clicked.connect(self._browse_font)
+        bc = QPushButton("Built-in"); bc.clicked.connect(self.rfont.clear)
+        h = QHBoxLayout(); h.addWidget(self.rfont); h.addWidget(bf); h.addWidget(bc)
+        f.addRow("Retro font", h)
+        n = QLabel("Retro mode draws everything in an 8-bit pixel font on a monochrome CRT. RetroRAG ships its own "
+                   "original pixel font; to use a different one - e.g. a PET / VIC-20 style font you have "
+                   "downloaded (Kreative Software's free 'Pet Me' family is a popular choice) - pick its .ttf file "
+                   "here. Pixel fonts look sharpest when designed on an 8-pixel grid.")
+        n.setWordWrap(True); n.setObjectName("muted"); f.addRow(n)
+
+        w = QWidget(); f = QFormLayout(w); tabs.addTab(w, "Servers")
+        self.host = QComboBox(); self.host.setEditable(True); self.host.addItems(["127.0.0.1", "0.0.0.0"])
+        self.host.setCurrentText(st.api_host)
+        self.host.setToolTip("127.0.0.1 = this PC only. 0.0.0.0 = other PCs on your network can connect.")
+        f.addRow("Listen on", self.host)
+        self.port = QSpinBox(); self.port.setRange(1024, 65535); self.port.setValue(st.api_port)
+        f.addRow("REST API port", self.port)
+        self.mport = QSpinBox(); self.mport.setRange(1024, 65535); self.mport.setValue(st.mcp_port)
+        f.addRow("MCP (HTTP) port", self.mport)
+        self.token = QLineEdit(st.api_token); self.token.setPlaceholderText("none (fine for 127.0.0.1)")
+        bg = QPushButton("Generate"); bg.clicked.connect(lambda: self.token.setText(secrets.token_urlsafe(24)))
+        h = QHBoxLayout(); h.addWidget(self.token); h.addWidget(bg)
+        f.addRow("Access token", h)
+        n = QLabel("If you listen on 0.0.0.0, set an access token. Clients send it as "
+                   "'Authorization: Bearer <token>'. Restart the servers after changing these.")
+        n.setWordWrap(True); n.setStyleSheet("color:gray"); f.addRow(n)
+
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self.accept); bb.rejected.connect(self.reject)
+        v.addWidget(bb)
+
+    def _browse_lib(self):
+        d = QFileDialog.getExistingDirectory(self, "Library folder", self.lib_path.text())
+        if d:
+            self.lib_path.setText(d)
+
+    def _browse_font(self):
+        fn, _ = QFileDialog.getOpenFileName(self, "Retro font", "", "Fonts (*.ttf *.otf)")
+        if fn:
+            self.rfont.setText(fn)
+
+    def _browse_tess(self):
+        f, _ = QFileDialog.getOpenFileName(self, "tesseract.exe", "C:/Program Files", "tesseract.exe (tesseract.exe)")
+        if f:
+            self.tess.setText(f)
+
+    def _test_tess(self):
+        from ..ocr import tesseract_info
+        info = tesseract_info(self.tess.text().strip())
+        if info["ok"]:
+            self.tess_status.setText(f"✓ Tesseract {info['version']} at {info['path']}\n"
+                                     f"Languages: {', '.join(info['languages'])}")
+        else:
+            self.tess_status.setText("✗ " + info["message"])
+
+    def _apply_preset(self, i: int):
+        if i <= 0:
+            return
+        prov, url, model, dpre, qpre = EMBED_PRESETS[self.preset.currentText()]
+        self.provider.setCurrentText(prov); self.e_url.setText(url); self.e_model.setText(model)
+        self.e_dpre.setText(dpre); self.e_qpre.setText(qpre)
+
+    def _collect(self, st: LibrarySettings) -> LibrarySettings:
+        st.extract_archives = self.extract_zip.isChecked()
+        st.tesseract_path = self.tess.text().strip()
+        st.ocr_language = self.lang.text().strip() or "eng"
+        st.low_conf_threshold = self.thresh.value()
+        st.ocr_dpi = self.dpi.value()
+        st.ocr_psm = int(self.psm.currentData())
+        st.ocr_upscale_small_images = self.upscale.isChecked()
+        st.ocr_cleanup = self.cleanup.currentData()
+        st.pdf_min_text_chars = self.min_chars.value()
+        st.embed_provider = self.provider.currentText()
+        st.embed_url = self.e_url.text().strip()
+        st.embed_model = self.e_model.text().strip()
+        st.embed_api_key = self.e_key.text().strip()
+        st.embed_doc_prefix = self.e_dpre.text()
+        st.embed_query_prefix = self.e_qpre.text()
+        st.chunk_chars = self.chunk.value()
+        st.chunk_overlap = self.overlap.value()
+        st.api_host = self.host.currentText().strip() or "127.0.0.1"
+        st.api_port = self.port.value()
+        st.mcp_port = self.mport.value()
+        st.api_token = self.token.text().strip()
+        return st
+
+    def _test_embed(self):
+        from ..embeddings import test_embedder
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            self.e_status.setText("✓ " + test_embedder(self._collect(LibrarySettings.load(self.lib.root))))
+        except Exception as e:
+            self.e_status.setText(f"✗ {e}")
+        finally:
+            QApplication.restoreOverrideCursor()
+
+    def apply(self) -> tuple[bool, str]:
+        """Save settings. Returns (chunking_changed, new_library_path)."""
+        old = LibrarySettings.load(self.lib.root)
+        st = self._collect(LibrarySettings.load(self.lib.root))
+        st.save(self.lib.root)
+        self.lib.reload_settings()
+        self.app.tesseract_path = st.tesseract_path
+        self.app.theme = self.theme_combo.currentData()
+        self.app.retro_phosphor = self.phosphor.currentData()
+        self.app.retro_scanlines = self.scan.isChecked()
+        self.app.retro_font_file = self.rfont.text().strip()
+        flag = app_root() / "portable.flag"
+        try:
+            if self.portable.isChecked() and not flag.exists():
+                flag.write_text("RetroRAG portable mode: settings live in ./settings\n")
+            elif not self.portable.isChecked() and flag.exists():
+                flag.unlink()
+        except OSError as e:
+            QMessageBox.warning(self, "Portable mode", f"Could not change portable mode: {e}")
+        changed = (old.chunk_chars, old.chunk_overlap) != (st.chunk_chars, st.chunk_overlap)
+        return changed, self.lib_path.text().strip()
+
+
+# =========================================================================== connect
+def claude_desktop_config_paths() -> list[Path]:
+    out = []
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        out.append(Path(appdata) / "Claude" / "claude_desktop_config.json")
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        pk = Path(local) / "Packages"
+        if pk.exists():
+            for d in pk.glob("Claude_*"):
+                out.append(d / "LocalCache" / "Roaming" / "Claude" / "claude_desktop_config.json")
+    return out
+
+
+def mcp_command(lib: Library) -> tuple[str, list[str], dict]:
+    """Command line for launching the stdio MCP server on *this* machine."""
+    if getattr(sys, "frozen", False):
+        cli = Path(sys.executable).with_name("retrorag-cli.exe")
+        return str(cli if cli.exists() else sys.executable), ["mcp", "--library", str(lib.root)], {}
+    py = Path(sys.executable)
+    if py.name.lower() == "pythonw.exe":
+        py = py.with_name("python.exe")
+    return str(py), ["-m", "retrorag", "mcp", "--library", str(lib.root)], {"PYTHONPATH": str(app_root())}
+
+
+class ConnectDialog(QDialog):
+    def __init__(self, parent, lib: Library, servers_running: bool):
+        super().__init__(parent)
+        self.lib = lib
+        self.setWindowTitle("Connect AI tools")
+        self.resize(780, 620)
+        st = lib.settings
+        v = QVBoxLayout(self)
+        cmd, args, env = mcp_command(lib)
+        entry = {"command": cmd, "args": args}
+        if env:
+            entry["env"] = env
+        self.entry = entry
+        host = "127.0.0.1" if st.api_host in ("0.0.0.0", "") else st.api_host
+        rest = f"http://{host}:{st.api_port}"
+        mcp_url = f"http://{host}:{st.mcp_port}/mcp"
+        auth = f"\nHeader:  Authorization: Bearer {st.api_token}" if st.api_token else ""
+        claude_code = "claude mcp add retrorag --scope user " + " ".join(
+            [f'-e {k}="{v}"' for k, v in env.items()] + ["--", f'"{cmd}"'] + [f'"{a}"' if " " in a else a for a in args])
+        state = ("<span style='color:green'>running</span>" if servers_running
+                 else "<span style='color:#c60'>not running - click <b>Start servers</b> in the toolbar</span>")
+        html = f"""
+<h3>Claude Desktop</h3>
+<p>Adds RetroRAG as an MCP server (stdio). Click <b>Add to Claude Desktop</b> below, then restart Claude Desktop.
+Or paste this into <code>claude_desktop_config.json</code> under <code>"mcpServers"</code>:</p>
+<pre>{json.dumps({"retrorag": entry}, indent=2)}</pre>
+<h3>Claude Code</h3><pre>{claude_code}</pre>
+<h3>Unsloth Studio</h3>
+<p>HTTP servers are {state}. In Studio chat: <b>MCP → Add custom MCP</b>, Display name <code>RetroRAG</code>,
+URL <code>{mcp_url}</code>{' and add header <code>Authorization: Bearer ' + st.api_token + '</code>' if st.api_token else ''}.
+Test connection → Add server, and make sure <b>Use MCP Servers</b> is on. (HTTP is recommended: Studio disables local
+stdio commands when LAN/remote access is enabled.) If Studio runs on another PC, set <i>Listen on</i> to 0.0.0.0 and an
+access token in Settings → Servers, and use this PC's IP address in the URL.</p>
+<p>To use Unsloth for <b>embeddings</b> too: Settings → Embeddings → preset <i>Unsloth Studio</i>, paste a Studio API key.</p>
+<h3>Other MCP clients over HTTP</h3>
+<p>LM Studio, Open WebUI, Cursor, Continue, Jan, AnythingLLM…: streamable-HTTP MCP URL <code>{mcp_url}</code>{auth}</p>
+<h3>REST / OpenAPI</h3>
+<p>Search: <code>{rest}/search?q=SID+filter&amp;system=C64</code> · Docs: <code>{rest}/docs</code> ·
+Spec: <code>{rest}/openapi.json</code> (Open WebUI → Settings → Tools → add OpenAPI server <code>{rest}</code>)</p>
+<h3>Ollama / any LLM without tool support</h3>
+<p>Use <b>Export</b> → Markdown corpus to load the documents into the chat app's own knowledge base, or call the REST
+search endpoint from your own scripts and paste the passages into the prompt.</p>
+<p style='color:gray'>The paths above are for <i>this</i> PC. On another PC, run RetroRAG there and open this dialog again
+to get the right paths.</p>"""
+        tb = QTextBrowser(); tb.setHtml(html); tb.setOpenExternalLinks(True)
+        v.addWidget(tb)
+        h = QHBoxLayout()
+        b1 = QPushButton("Add to Claude Desktop"); b1.clicked.connect(self.install_claude_desktop)
+        b2 = QPushButton("Copy Claude Desktop JSON")
+        b2.clicked.connect(lambda: QApplication.clipboard().setText(json.dumps({"retrorag": entry}, indent=2)))
+        b3 = QPushButton("Copy Claude Code command"); b3.clicked.connect(lambda: QApplication.clipboard().setText(claude_code))
+        b4 = QPushButton("Copy MCP URL"); b4.clicked.connect(lambda: QApplication.clipboard().setText(mcp_url))
+        for b in (b1, b2, b3, b4):
+            h.addWidget(b)
+        h.addStretch()
+        close = QPushButton("Close"); close.clicked.connect(self.accept); h.addWidget(close)
+        v.addLayout(h)
+
+    def install_claude_desktop(self):
+        paths = [p for p in claude_desktop_config_paths() if p.parent.exists()] or claude_desktop_config_paths()[:1]
+        if not paths:
+            QMessageBox.warning(self, "Claude Desktop", "Could not locate Claude Desktop's config folder.")
+            return
+        done = []
+        for p in paths:
+            try:
+                cfg = json.loads(p.read_text("utf-8")) if p.exists() else {}
+                if p.exists():
+                    shutil.copy2(p, p.with_suffix(".json.bak"))
+                cfg.setdefault("mcpServers", {})["retrorag"] = self.entry
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text(json.dumps(cfg, indent=2), "utf-8")
+                done.append(str(p))
+            except Exception as e:
+                QMessageBox.warning(self, "Claude Desktop", f"Could not update {p}:\n{e}")
+        if done:
+            QMessageBox.information(self, "Claude Desktop", "Added 'retrorag' to:\n" + "\n".join(done) +
+                                    "\n\n(backup saved as .json.bak)\nRestart Claude Desktop to load it.")
