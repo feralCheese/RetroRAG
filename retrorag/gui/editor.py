@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QMenu, QToolButton, QGraphi
 
 from ..library import Document, Library, now_iso
 from . import theme
-from ..ocr import load_ocr_json, render_page
+from ..ocr import is_graphic_word, load_ocr_json, reference_height, render_page
 from ..textutil import COMMENT_LINE_RE, MARKER_RE, PAGE_RE, count_markers, strip_markers
 
 PSM_SHORT = {3: "Layout: auto", 4: "Single column", 6: "Uniform block", 11: "Sparse text", 12: "Sparse + rotate",
@@ -356,6 +356,11 @@ class ProofEditor(QWidget):
         self.loupe.setToolTip("Magnified view of the line you're on, with the current word boxed")
         self.loupe.setVisible(self.has_pages)
         rv.addWidget(self.loupe)
+        self.hint = QLabel()
+        self.hint.setObjectName("callout")
+        self.hint.setWordWrap(True)
+        self.hint.hide()
+        rv.addWidget(self.hint)
         rv.addWidget(self.text, 1)
         self.split.addWidget(right)
         self.split.setStretchFactor(0, 1)
@@ -386,6 +391,8 @@ class ProofEditor(QWidget):
         act("Prev", self.prev_flag, "Shift+F3", "Previous low-confidence word", "prev")
         act("Next flag", self.next_flag, "F3", "Next low-confidence word (selects it so you can type over it)", "flag")
         act("Accept", self.accept_here, "Ctrl+Return", "Accept the word at the cursor (removes its marker) and go to the next", "check")
+        act("Delete word", self.delete_here, "Ctrl+Del",
+            "Delete the flagged word at the cursor - for junk OCR 'found' in drawings - and go to the next", "delete")
         more = QToolButton()
         more.setText("More")
         more.setPopupMode(QToolButton.InstantPopup)
@@ -393,6 +400,8 @@ class ProofEditor(QWidget):
         mm.addAction("Accept all flagged words on this page", self.accept_page)
         mm.addAction("Accept all flagged words in document…", self.accept_all)
         mm.addSeparator()
+        mm.addAction("Remove drawing shapes read as words (this page)…", self.remove_drawing_noise).setToolTip(
+            "Delete flagged 'words' whose box is far too big for text - chip outlines, wires and boxes in schematics")
         mm.addAction("Delete garbage lines on this page…", self.delete_garbage_lines).setToolTip(
             "Remove lines that are mostly OCR noise - typical around diagrams and schematics")
         more.setMenu(mm)
@@ -634,6 +643,72 @@ class ProofEditor(QWidget):
         c.insertText(new)
         c.endEditBlock()
 
+    def delete_here(self):
+        """Delete the flagged word under the cursor (and one neighbouring space), then go to the next flag."""
+        hit = self._marker_at_cursor()
+        if not hit:
+            self.next_flag()
+            return
+        base, m = hit
+        line = self.text.textCursor().block().text()
+        start, end = m.start(), m.end()
+        if end < len(line) and line[end] == " ":
+            end += 1
+        elif start > 0 and line[start - 1] == " ":
+            start -= 1
+        c = self.text.textCursor()
+        c.setPosition(base + start)
+        c.setPosition(base + end, QTextCursor.KeepAnchor)
+        c.removeSelectedText()
+        self.text.setTextCursor(c)
+        self.next_flag()
+
+    def _page_ref(self, pj: dict) -> float:
+        return reference_height([w for l in pj.get("lines", []) for w in l["words"]], self.threshold)
+
+    def remove_drawing_noise(self):
+        """Remove flagged words on this page whose box is drawing-sized (uses the stored OCR word boxes)."""
+        page = self.cur_page
+        pj = self.ocr.get("pages", {}).get(str(page))
+        if not pj:
+            QMessageBox.information(self, "Drawing shapes", "This page has no OCR word positions.")
+            return
+        ref = self._page_ref(pj)
+        lo, hi = self._page_range()
+        seg = self.text.toPlainText()[lo:hi]
+        out, n, li = [], 0, -1
+        for line in seg.split("\n"):
+            if PAGE_RE.match(line) or not counts_as_ocr_line(line):
+                out.append(line)
+                continue
+            li += 1
+            if li >= len(pj["lines"]) or line.strip() == REMOVED_LINE:
+                out.append(line)
+                continue
+            words, toks = pj["lines"][li]["words"], line.split(" ")
+            if len([t for t in toks if t]) != len(words):     # line was edited: can't match words safely
+                out.append(line)
+                continue
+            keep, wi = [], 0
+            for t in toks:
+                if not t:
+                    keep.append(t)
+                    continue
+                w = words[wi]; wi += 1
+                if MARKER_RE.fullmatch(t) and is_graphic_word(w, ref, pj.get("height", 0), self.threshold):
+                    n += 1
+                    continue
+                keep.append(t)
+            new = " ".join(x for x in keep if x)
+            out.append(new if new.strip() else REMOVED_LINE)
+        if not n:
+            QMessageBox.information(self, "Drawing shapes", "No drawing-sized 'words' found on this page.")
+            return
+        if QMessageBox.question(self, "Drawing shapes",
+                                f"Remove {n} flagged 'word(s)' on this page whose box is far too big for text - "
+                                "parts of the drawing that OCR mistook for words?\n\nCtrl+Z undoes it.") == QMessageBox.Yes:
+            self._replace_range(lo, hi, "\n".join(out))
+
     def accept_page(self):
         lo, hi = self._page_range()
         seg = self.text.toPlainText()[lo:hi]
@@ -724,10 +799,13 @@ class ProofEditor(QWidget):
         self._last_loc = None
         self.view.set_image(self._img_cache[n], pj.get("width") if pj else None)
         if pj:
+            ref = self._page_ref(pj)
             for line in pj.get("lines", []):
                 for w in line["words"]:
                     if w["c"] < self.threshold:
-                        self.view.add_box(w["b"], *box_colors("flag"), 1)
+                        pen_col, fill = box_colors("flag")
+                        big = is_graphic_word(w, ref, pj.get("height", 0), self.threshold)
+                        self.view.add_box(w["b"], pen_col, None if big else fill, 1)
             self._static_overlay = list(self.view.overlay)
         else:
             self._static_overlay = []
@@ -776,6 +854,7 @@ class ProofEditor(QWidget):
         pj = self.ocr.get("pages", {}).get(str(page))
         if not pj or li < 0 or li >= len(pj.get("lines", [])):
             self._update_loupe(None, None)
+            self._set_hint(None, False)
             return
         line = pj["lines"][li]
         if getattr(self, "a_spot", None) is not None and self.a_spot.isChecked():
@@ -783,12 +862,20 @@ class ProofEditor(QWidget):
         self.view.add_box(line["b"], *box_colors("line"), 2)
         words = line["words"]
         word = words[wi] if 0 <= wi < len(words) else None
-        item = self.view.add_box(word["b"], *box_colors("word"), 2) if word else None
+        graphic = bool(word) and is_graphic_word(word, self._page_ref(pj), pj.get("height", 0), self.threshold)
+        item = None
+        if word:
+            pen_col, fill = box_colors("word")
+            item = self.view.add_box(word["b"], pen_col, None if graphic else fill, 2)
+            if graphic:                      # keep the drawing visible: dashed outline, no fill
+                pen = QPen(pen_col, 3, Qt.DashLine)
+                item.setPen(pen)
+        self._set_hint(word, graphic)
         loc = (page, li, wi)
         if loc != self._last_loc:          # moved to another word: flash it and bring it into view
             self._last_loc = loc
             if word:
-                self._flash(word["b"])
+                self._flash(word["b"], outline_only=graphic)
                 vp = self.view.viewport()
                 self.view.ensureVisible(item, vp.width() // 4, vp.height() // 4)
         self._update_loupe(line, word)
@@ -804,14 +891,24 @@ class ProofEditor(QWidget):
         it.setZValue(4)
         self.view.overlay.append(it)
 
-    def _flash(self, b):
+    def _set_hint(self, word, graphic: bool):
+        if word and graphic:
+            self.hint.setText("<b>This flagged 'word' covers a large part of the drawing</b> - it's almost certainly a "
+                              "chip outline, wire or box that OCR mistook for text, not a word. Press <b>Ctrl+Del</b> "
+                              "to delete it, or <i>More &rarr; Remove drawing shapes read as words</i> for the whole page.")
+            self.hint.show()
+        else:
+            self.hint.hide()
+
+    def _flash(self, b, outline_only: bool = False):
         self._stop_flash()
         s = self.view.scale_factor
         col = QColor(theme.T["accent"]) if theme.is_retro() else QColor(255, 70, 0)
         fill = QColor(col)
-        fill.setAlpha(90)
+        fill.setAlpha(0 if outline_only else 90)
         r = QRectF(b[0] * s - 6, b[1] * s - 6, (b[2] - b[0]) * s + 12, (b[3] - b[1]) * s + 12)
-        self._flash_item = self.view.scene().addRect(r, QPen(col, 4), QBrush(fill))
+        self._flash_item = self.view.scene().addRect(r, QPen(col, 4, Qt.DashLine if outline_only else Qt.SolidLine),
+                                                     QBrush(fill))
         self._flash_item.setZValue(7)
         self._flash_left = 6
         self._flash_timer.start()

@@ -115,6 +115,7 @@ class LibrarySettings:
     ocr_psm: int = 3                      # tesseract page segmentation mode (3 = auto, 6 = block, 11 = sparse)
     low_conf_threshold: int = 70          # words below this confidence are wrapped in {?word|NN?}
     ocr_upscale_small_images: bool = True
+    ocr_drop_graphics: bool = True        # ignore drawing shapes OCR mistakes for words (schematics, pinouts)
     ocr_cleanup: str = "auto"             # auto | none | light | strong  (median denoise before OCR)
     pdf_min_text_chars: int = 25          # pages with less extractable text than this are treated as scanned
     tesseract_path: str = ""              # optional override; app setting used otherwise

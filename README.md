@@ -75,12 +75,14 @@ Windows 11-style light and dark themes using the Segoe Fluent icon set. *View �
    |---|---|
    | **F3** / Shift+F3 | next / previous flagged word, which is selected so you can type the fix over it |
    | **Ctrl+Enter** | accept the word at the cursor (removes the marker) and jump to the next one |
+   | **Ctrl+Del** | delete the flagged word at the cursor (junk from a drawing) and jump to the next one |
    | Ctrl+S | save |
    | Ctrl+H | find / replace (with regex). Good for systematic errors, e.g. `0` → `O` in words |
    | Ctrl+wheel, Ctrl+= / Ctrl+- | zoom the scan |
    | click on the scan | jump to that line in the text |
 
    - **Seeing what to fix:** the magnifier strip above the text shows the current line from the scan, enlarged, with the word boxed. On the page, the word flashes when you move to it, and *Spotlight* dims everything except the current line.
+   - **Flagged "words" in drawings:** in schematics, Tesseract sometimes reads part of the drawing (a chip outline, a wire, a pin box) as a short word, e.g. `{?Fs|46?}` with a box covering a whole IC. That's not text, so delete it: **Ctrl+Del** removes the flagged word at the cursor and jumps to the next one. *More → Remove drawing shapes read as words* clears a whole page. New OCR runs skip these shapes automatically (Settings → OCR → *Ignore drawing shapes…*). The rule of thumb: if it's real text, fix it and press Ctrl+Enter; if it's part of a drawing, Ctrl+Del.
    - **Diagram noise:** *More → Delete garbage lines on this page* removes lines that are mostly OCR junk from diagrams and schematics. Ctrl+Z undoes it.
    - A **●** on the editor tab means unsaved changes. *Save* (Ctrl+S) shows **✓ Saved**.
    - **Re-OCR page** retries one page with another layout mode (*11 - Sparse text* suits schematics and pinouts)

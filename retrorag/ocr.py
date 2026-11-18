@@ -88,7 +88,29 @@ def prepare(img, upscale: bool = True, cleanup: str = "light"):
     return g
 
 
-def ocr_image(img, lang: str = "eng", psm: int = 3, threshold: int = 70) -> tuple[str, dict]:
+def reference_height(words: list[dict], threshold: int) -> float:
+    """Typical text height on a page: median height of confidently-read words (all words if too few)."""
+    import statistics
+    hs = [w["b"][3] - w["b"][1] for w in words if w["c"] >= threshold]
+    if len(hs) < 3:
+        hs = [w["b"][3] - w["b"][1] for w in words]
+    return float(statistics.median(hs)) if hs else 0.0
+
+
+def is_graphic_word(w: dict, ref_h: float, page_h: int, threshold: int) -> bool:
+    """A low-confidence 'word' that is far too big for its letters is part of a drawing (a chip outline, a wire,
+    a box), not text - e.g. a 2-letter 'Fs' whose box covers a whole IC symbol on a schematic."""
+    if w["c"] >= threshold:
+        return False
+    h = w["b"][3] - w["b"][1]
+    wpc = (w["b"][2] - w["b"][0]) / max(1, len(w["t"]))
+    if not ref_h:                     # nothing readable to compare with: only a really huge box counts
+        return bool(page_h) and h > 0.15 * page_h
+    return h > 4.0 * ref_h or wpc > 4.0 * ref_h     # drawing shapes are ~10x text height; real words < 3x
+
+
+def ocr_image(img, lang: str = "eng", psm: int = 3, threshold: int = 70,
+              drop_graphics: bool = True) -> tuple[str, dict]:
     """OCR one page image -> (markdown body, page json)."""
     import pytesseract
     data = pytesseract.image_to_data(img, lang=lang, config=f"--psm {psm}", output_type=pytesseract.Output.DICT)
@@ -108,6 +130,15 @@ def ocr_image(img, lang: str = "eng", psm: int = 3, threshold: int = 70) -> tupl
             order.append(key)
         lines[key]["words"].append({"t": txt, "c": round(conf, 1), "b": [l, t, l + w, t + h]})
 
+    dropped = 0
+    if drop_graphics:
+        ref = reference_height([w for k in order for w in lines[k]["words"]], threshold)
+        for k in order:
+            keep = [w for w in lines[k]["words"] if not is_graphic_word(w, ref, img.height, threshold)]
+            dropped += len(lines[k]["words"]) - len(keep)
+            lines[k]["words"] = keep
+        order = [k for k in order if lines[k]["words"]]
+
     md_lines, json_lines, confs, prev_par = [], [], [], None
     for key in order:
         words = lines[key]["words"]
@@ -122,18 +153,19 @@ def ocr_image(img, lang: str = "eng", psm: int = 3, threshold: int = 70) -> tupl
         confs += [w["c"] for w in words]
     page = {"width": img.width, "height": img.height, "psm": psm, "lang": lang,
             "mean_conf": round(sum(confs) / len(confs), 1) if confs else None,
-            "flagged": sum(1 for c in confs if c < threshold), "lines": json_lines}
+            "flagged": sum(1 for c in confs if c < threshold), "dropped_graphics": dropped, "lines": json_lines}
     return "\n".join(md_lines).strip(), page
 
 
-def ocr_best(img, upscale: bool, cleanup: str, lang: str, psm: int, threshold: int) -> tuple[str, dict]:
+def ocr_best(img, upscale: bool, cleanup: str, lang: str, psm: int, threshold: int,
+             drop_graphics: bool = True) -> tuple[str, dict]:
     """OCR with the chosen cleanup; 'auto' tries no cleanup first and retries poor pages with strong cleanup,
     keeping whichever result Tesseract is more confident about."""
     first = "none" if cleanup == "auto" else cleanup
-    body, pj = ocr_image(prepare(img, upscale, first), lang, psm, threshold)
+    body, pj = ocr_image(prepare(img, upscale, first), lang, psm, threshold, drop_graphics)
     pj["cleanup"] = first
     if cleanup == "auto" and (pj["mean_conf"] or 0) < AUTO_RETRY_BELOW:
-        body2, pj2 = ocr_image(prepare(img, upscale, "strong"), lang, psm, threshold)
+        body2, pj2 = ocr_image(prepare(img, upscale, "strong"), lang, psm, threshold, drop_graphics)
         if (pj2["mean_conf"] or 0) > (pj["mean_conf"] or 0):
             body, pj = body2, pj2
             pj["cleanup"] = "strong"
@@ -234,7 +266,7 @@ def ocr_document(lib: Library, d: Document, *, pages: list[int] | None = None, f
         if progress:
             progress(done, len(todo), f"{d.title}: OCR page {n}")
         body, pj = ocr_best(img, st.ocr_upscale_small_images and d.kind == "image", cleanup,
-                            st.ocr_language, psm, st.low_conf_threshold)
+                            st.ocr_language, psm, st.low_conf_threshold, st.ocr_drop_graphics)
         existing[n] = body if body else "<!-- OCR found no text on this page -->"
         js["pages"][str(n)] = pj
         done += 1
