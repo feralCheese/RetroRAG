@@ -1,6 +1,6 @@
 # RetroRAG
 
-A Windows app for building a **retrieval (RAG) library of retro computer & console documentation** that Claude
+A Windows app (initially) for building a **retrieval (RAG) library of retro computer & console documentation** that Claude
 and other AI systems (including locally hosted ones such as Unsloth Studio, Ollama, LM Studio) can search.
 
 - Organise by **system** (C64, Amiga 500, ZX Spectrum, NES…) and **category**: user guides, programming reference,
