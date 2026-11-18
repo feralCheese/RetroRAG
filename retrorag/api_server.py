@@ -188,7 +188,9 @@ class ServerThread:
 
     def __init__(self, app, host: str, port: int):
         import uvicorn
-        self.config = uvicorn.Config(app, host=host, port=port, log_level="warning", lifespan="on")
+        # use_colors=False: never probe the console (there isn't one when the app runs without a window)
+        self.config = uvicorn.Config(app, host=host, port=port, log_level="warning", lifespan="on",
+                                     use_colors=False)
         self.server = uvicorn.Server(self.config)
         self.thread = threading.Thread(target=self.server.run, daemon=True)
         self.host, self.port = host, port
