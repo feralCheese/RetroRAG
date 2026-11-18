@@ -2,7 +2,9 @@
 
     REST:  http://127.0.0.1:8765/docs          (Swagger UI)   /openapi.json  (Open WebUI "tool server", etc.)
     MCP:   http://127.0.0.1:8766/mcp           (streamable HTTP: LM Studio, Open WebUI, Cursor, other MCP clients)
-Everything is read-only except POST /images, which builds a disk/tape image and adds it to the library.
+Everything is read-only except creating disk/tape images (POST /images) and the upload area (/uploads, /transfer),
+which hold files passing between an AI chat and RetroRAG. /transfer/<id>/... links need no access token: the long
+random id in the link is the permission, and areas expire (see transfer.py).
 """
 from __future__ import annotations
 
@@ -147,6 +149,7 @@ def create_app(library: str | Path):
         text: str | None = None
         base64: str | None = None
         doc_id: int | None = None
+        upload: str | None = None
         basic: bool = False
         type: str = ""
         load: str | int | None = None
@@ -154,31 +157,122 @@ def create_app(library: str | Path):
         autostart: int | None = None
 
     class ImageRequest(BaseModel):
-        system: str
         format: str
         files: list[ImageFile]
+        system: str | None = None
         label: str = ""
         title: str | None = None
         options: dict = {}
+        add_to_library: bool = True
 
-    globals().update(ImageFile=ImageFile, ImageRequest=ImageRequest)
+    class ExtractRequest(BaseModel):
+        file: str = ""
+        names: list[str] | None = None
+
+    class AddRequest(BaseModel):
+        system: str
+        file: str = ""
+        category: str | None = None
+        title: str | None = None
+
+    globals().update(ImageFile=ImageFile, ImageRequest=ImageRequest, ExtractRequest=ExtractRequest,
+                     AddRequest=AddRequest)
 
     @app.post("/images", operation_id="create_image",
               summary="Create a disk/tape image from text, BASIC source, base64 data or library documents")
     def create_image(req: ImageRequest):
-        s = lib.find_system(req.system)
-        if not s:
+        s = lib.find_system(req.system) if req.system else None
+        if req.system and not s:
             raise HTTPException(404, f"No system matching '{req.system}'")
+        if req.add_to_library and not s:
+            raise HTTPException(422, "Give a system, or add_to_library=false to just get a download link")
         try:
             fmt = media.get(req.format)
             nfs, sources = media_ops.files_from_specs(lib, fmt, [f.model_dump(exclude_none=True) for f in req.files])
+            if not req.add_to_library:
+                return media_ops.image_to_area(lib, fmt.id, nfs, label=req.label, title=req.title,
+                                               options=req.options)
             doc_id = media_ops.create_image_doc(lib, s, fmt.id, nfs, label=req.label, title=req.title,
                                                 options=req.options, source_doc_ids=sources, log=lambda m: None)
-        except (media.MediaError, ValueError) as e:
+        except (media.MediaError, transfer.TransferError, ValueError) as e:
             raise HTTPException(422, str(e))
         d = lib.document(doc_id)
         return {"doc_id": doc_id, "title": d.title, "path": str(lib.abspath(d.path)),
                 **media_ops.image_info(media_ops.open_doc(lib, d))}
+
+    # ------------------------------------------------------------------ uploads and downloads
+    from fastapi import Request
+    from fastapi.responses import FileResponse, HTMLResponse
+    from . import transfer
+    globals()["Request"] = Request                    # resolvable for FastAPI, like the models above
+
+    def _t(fn, *a, **k):
+        try:
+            return fn(*a, **k)
+        except (transfer.TransferError, media.MediaError) as e:
+            raise HTTPException(404 if "No " in str(e) or "expired" in str(e) else 422, str(e))
+
+    @app.post("/uploads", operation_id="get_upload_link",
+              summary="A link where the user (or code) can send files to RetroRAG")
+    def new_upload():
+        return _t(transfer.upload_link, lib)
+
+    @app.get("/uploads/{upload_id}", operation_id="list_uploads", summary="Files sent with an upload link")
+    def list_uploads(upload_id: str):
+        return {"upload_id": upload_id, "files": _t(transfer.list_area, lib, upload_id)}
+
+    @app.get("/uploads/{upload_id}/image", operation_id="list_upload_image_contents",
+             summary="Directory of an uploaded disk/tape image")
+    def upload_image(upload_id: str, file: str = ""):
+        ref = f"{upload_id}/{file}" if file else upload_id
+        img, title, _ = _t(media_ops.open_source, lib, None, ref)
+        return {"upload": ref, "title": title, **media_ops.image_info(img)}
+
+    @app.post("/uploads/{upload_id}/extract", operation_id="extract_upload_image_files",
+              summary="Extract the files on an uploaded disk/tape image: download links, nothing added to the library")
+    def upload_extract(upload_id: str, req: ExtractRequest):
+        ref = f"{upload_id}/{req.file}" if req.file else upload_id
+        img, title, _ = _t(media_ops.open_source, lib, None, ref)
+        return _t(media_ops.extract_to_area, lib, img, req.names or None, title)
+
+    @app.post("/documents/{doc_id}/image/extract", operation_id="extract_image_files",
+              summary="Extract the files on a library disk/tape image as download links")
+    def doc_extract(doc_id: int, req: ExtractRequest):
+        img, title, _ = _t(media_ops.open_source, lib, doc_id, None)
+        return _t(media_ops.extract_to_area, lib, img, req.names or None, title)
+
+    @app.post("/uploads/{upload_id}/add", operation_id="add_file_to_library",
+              summary="Add an uploaded file (or all of an upload's files) to the library")
+    def upload_add(upload_id: str, req: AddRequest):
+        s = lib.find_system(req.system)
+        if not s:
+            raise HTTPException(404, f"No system matching '{req.system}'")
+        ref = f"{upload_id}/{req.file}" if req.file else upload_id
+        ids = _t(media_ops.add_upload_to_library, lib, ref, s, req.category, req.title, log=lambda m: None)
+        return {"added": [{"doc_id": i, "title": lib.document(i).title} for i in ids]}
+
+    @app.get("/transfer/{tid}/upload", include_in_schema=False)
+    def upload_page(tid: str):
+        if not transfer.upload_open(lib, tid):
+            return HTMLResponse("<h1>This upload link has expired</h1><p>Ask the AI for a new one.</p>", 410)
+        return HTMLResponse(transfer.upload_page())
+
+    @app.put("/transfer/{tid}/upload/{filename:path}", include_in_schema=False)
+    async def upload_put(tid: str, filename: str, request: Request):
+        if not transfer.upload_open(lib, tid):
+            raise HTTPException(410, "This upload link has expired - ask for a new one")
+        data = await request.body()
+        return {"saved": _t(transfer.save_file, lib, tid, filename, data)}
+
+    @app.get("/transfer/{tid}/{path:path}", include_in_schema=False)
+    def download(tid: str, path: str):
+        try:
+            f = transfer.resolve(lib, f"{tid}/{path}")
+        except transfer.TransferError as e:
+            raise HTTPException(404, str(e))
+        if f.name == ".meta.json":
+            raise HTTPException(404, "not found")
+        return FileResponse(f, filename=f.name, media_type="application/octet-stream")
 
     return app
 
@@ -208,19 +302,46 @@ class ServerThread:
         return self.thread.is_alive()
 
 
+AUTH_HELP = (b'{"detail":"missing or wrong access token. Send the header Authorization with the value '
+             b'\'Bearer <token>\' (the token is in RetroRAG: Settings > Servers, or AI > Connect AI)."}')
+
+
+def presented_tokens(headers: dict[str, str]) -> list[str]:
+    """Every place a client might have put the access token. The standard is 'Authorization: Bearer <token>', but
+    apps with separate header name / value boxes get filled in other ways too: 'Authorization: <token>',
+    'X-API-Key: <token>', or a header called 'Bearer' holding the token. Any of them is fine as long as the token
+    itself is right."""
+    out = []
+    auth = headers.get("authorization", "").strip()
+    if auth:
+        scheme, _, rest = auth.partition(" ")
+        out.append(rest.strip() if scheme.lower() == "bearer" and rest.strip() else auth)
+    for name in ("x-api-key", "bearer", "api-key"):
+        v = headers.get(name, "").strip()
+        if v:
+            out.append(v[7:].strip() if v.lower().startswith("bearer ") else v)
+    return out
+
+
 class BearerAuth:
-    """Minimal ASGI middleware: require 'Authorization: Bearer <token>' (CORS preflight is let through)."""
+    """Minimal ASGI middleware: require the access token (see presented_tokens); CORS preflight is let through."""
 
     def __init__(self, app, token: str):
         self.app, self.token = app, token
 
+    def allowed(self, headers: dict[str, str]) -> bool:
+        import hmac
+        want = self.token.encode()
+        return any(hmac.compare_digest(t.encode(), want) for t in presented_tokens(headers))
+
     async def __call__(self, scope, receive, send):
-        if scope["type"] == "http" and scope.get("method") != "OPTIONS":
-            headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
-            if headers.get("authorization", "") != f"Bearer {self.token}":
+        if (scope["type"] == "http" and scope.get("method") != "OPTIONS"
+                and not scope.get("path", "").startswith("/transfer/")):      # transfer links carry their own key
+            headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
+            if not self.allowed(headers):
                 await send({"type": "http.response.start", "status": 401,
                             "headers": [(b"content-type", b"application/json"), (b"www-authenticate", b"Bearer")]})
-                await send({"type": "http.response.body", "body": b'{"detail":"missing or wrong bearer token"}'})
+                await send({"type": "http.response.body", "body": AUTH_HELP})
                 return
         await self.app(scope, receive, send)
 

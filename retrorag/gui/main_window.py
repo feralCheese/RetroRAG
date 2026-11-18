@@ -221,6 +221,9 @@ class MainWindow(QMainWindow):
         m = mb.addMenu("&File")
         m.addAction("Open library folder…", self.open_library)
         m.addAction("Import system folder…", self.import_system_folder_dialog)
+        a = m.addAction("Open disk / tape image…", self.open_image_file)
+        a.setShortcut(QKeySequence("Ctrl+Shift+O"))
+        a.setToolTip("Look inside any disk or tape image file and extract from it, without adding it to the library")
         m.addAction("Copy linked files into library (make portable)", self.consolidate)
         from ..platform_util import file_manager_name
         m.addAction(f"Show library in {file_manager_name()}", lambda: open_path(self.lib.root))
@@ -982,10 +985,22 @@ read a drawing.</p>
                     folder=str(folder), copy=v["copy"], kinds=sorted(v["kinds"]) if v["kinds"] is not None else None),
                     on_done=self._after_add, verb=f"Adding folder {folder.name}")
 
+    def open_image_file(self, path: str | None = None):
+        from .media_ui import ImageBrowserDialog, image_file_filter, image_from_file
+        if not path:
+            path, _ = QFileDialog.getOpenFileName(self, "Open disk / tape image", "", image_file_filter())
+        if not path:
+            return
+        got = image_from_file(self, Path(path))
+        if not got:
+            return
+        img, title, img_path = got
+        dlg = ImageBrowserDialog(self, self.lib, img, title, img_path)
+        dlg.add_to_library.connect(lambda p: self.add_paths([Path(p)]))
+        dlg.exec()
+
     def create_image_dialog(self, system_id: int | None = None, doc_ids: list[int] | None = None):
         from .media_ui import CreateImageDialog
-        if not self._ensure_system():
-            return
         if system_id is None:
             s = self.current_system()
             system_id = s.id if s else None

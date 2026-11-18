@@ -300,7 +300,15 @@ def files_from_specs(lib: Library, fmt: media.MediaFormat, specs: list[dict]) ->
         kind = str(sp.get("type") or "")
         if kind.lower() == "basic" and fmt.basic and "text" in sp:
             basic = True
-        if sp.get("doc_id") is not None:
+        if sp.get("upload"):                          # a file the user uploaded (see transfer.py)
+            from . import transfer
+            p = transfer.resolve(lib, str(sp["upload"]))
+            data = p.read_bytes()
+            nf = new_file(fmt, name, data=data, host_name=p.name, kind=kind, load=sp.get("load"),
+                          exec_=sp.get("exec"), autostart=sp.get("autostart"))
+            if not name:
+                nf.name = media.prepare(fmt, p.name, data).name
+        elif sp.get("doc_id") is not None:
             d = lib.document(int(sp["doc_id"]))
             if not d:
                 raise MediaError(f"File {i + 1}: no document with id {sp['doc_id']}")
@@ -321,6 +329,91 @@ def files_from_specs(lib: Library, fmt: media.MediaFormat, specs: list[dict]) ->
             nf = new_file(fmt, name, text=str(sp["text"]), basic=basic, kind="" if basic else kind,
                           load=sp.get("load"), exec_=sp.get("exec"), autostart=sp.get("autostart"))
         else:
-            raise MediaError(f"File {i + 1}: give text, base64 or doc_id")
+            raise MediaError(f"File {i + 1}: give text, base64, upload or doc_id")
         out.append(nf)
     return out, sources
+
+
+# ---------------------------------------------------------------- without the library (uploads / downloads)
+def open_source(lib: Library, doc_id: int | None = None, upload: str | None = None) -> tuple[Image, str, Document | None]:
+    """An image from the library (doc_id) or from an upload ('<id>/<file>') -> (image, title, document or None)."""
+    if doc_id is not None:
+        d = lib.document(int(doc_id))
+        if not d:
+            raise MediaError(f"No document with id {doc_id}")
+        return open_doc(lib, d), d.title, d
+    if upload:
+        from . import transfer
+        p = transfer.resolve(lib, upload)
+        try:
+            img = media.open_image(p.read_bytes(), p.suffix)
+        except MediaError:
+            raise MediaError(f"{p.name} isn't a disk or tape image RetroRAG can read "
+                             f"({', '.join(sorted(media.media_exts()))})")
+        return img, p.stem, None
+    raise MediaError("Say which image: doc_id (in the library) or upload (from list_uploads)")
+
+
+def extract_to_area(lib: Library, img: Image, names: list[str] | None, title: str) -> dict:
+    """Extract files into a new download area, plus one zip of them all. -> links / paths."""
+    from . import transfer
+    tid, folder = transfer.new_area(lib, "output")
+    stem = safe_filename(title) or "files"
+    files = extract_to_folder(img, names, folder / stem)
+    import zipfile
+    zpath = folder / f"{stem}.zip"
+    with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED) as zf:
+        for f in files:
+            zf.write(f, f.relative_to(folder).as_posix())
+            inf = Path(str(f) + ".inf")
+            if inf.exists():
+                zf.write(inf, inf.relative_to(folder).as_posix())
+    base = transfer.base_url(lib)
+    out = {"all_files_zip": transfer.file_info(lib, zpath, base),
+           "files": [transfer.file_info(lib, f, base) for f in files]}
+    if base is None:
+        out["note"] = transfer.not_running_note(lib)
+    return out
+
+
+def image_to_area(lib: Library, fmt_id: str, files: list[NewFile], label: str = "", title: str | None = None,
+                  options: dict | None = None) -> dict:
+    """Build an image and offer it as a download, without adding it to the library."""
+    from . import transfer
+    fmt = media.get(fmt_id)
+    if not files:
+        raise MediaError("Add at least one file")
+    raw = fmt.create(files, label, **(options or {}))
+    title = (title or label or "new " + fmt.medium).strip()
+    ext = fmt.ext
+    if fmt.id == "adl" and (options or {}).get("size", "L").upper() in ("M", "S"):
+        ext = ".ad" + options["size"].lower()
+    tid, _ = transfer.new_area(lib, "output")
+    p = transfer.save_output(lib, tid, safe_filename(title) + ext, raw)
+    out = {"image": transfer.file_info(lib, p), **image_info(fmt.open(raw))}
+    if "download_url" not in out["image"]:
+        out["note"] = transfer.not_running_note(lib)
+    return out
+
+
+def add_upload_to_library(lib: Library, ref: str, system: System, category: str | None = None,
+                          title: str | None = None, log: Callable[[str], None] = print) -> list[int]:
+    """Add an uploaded file - or every file of an upload, given just its id - to the library."""
+    from . import ingest, transfer
+    ref = (ref or "").strip().strip("/")
+    if "/" in ref:
+        paths = [transfer.resolve(lib, ref)]
+    else:
+        root = transfer.area(lib, ref)
+        paths = sorted(p for p in root.rglob("*") if p.is_file() and p.name != ".meta.json")
+    ids = []
+    for p in paths:
+        cat = category or (IMAGE_CATEGORY if media.detect(p.read_bytes(), p.suffix) else "Other")
+        i = ingest.add_file(lib, system, cat, p, copy=True, title=title if len(paths) == 1 else None, log=log)
+        if i is None:
+            row = lib.conn().execute("SELECT id FROM documents WHERE system_id=? AND sha1=?",
+                                     (system.id, media_sha1(p.read_bytes()))).fetchone()
+            i = row["id"] if row else None
+        if i:
+            ids.append(i)
+    return ids

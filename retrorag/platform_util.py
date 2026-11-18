@@ -88,6 +88,18 @@ def is_network_path(p: str | Path) -> bool:
         return False
 
 
+def lan_address() -> str | None:
+    """This PC's address on the local network (what another PC uses to reach it), or None."""
+    import socket
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("10.255.255.255", 1))          # picks the outgoing interface; nothing is sent
+            ip = s.getsockname()[0]
+        return None if ip.startswith(("127.", "0.")) else ip
+    except OSError:
+        return None
+
+
 def file_manager_name() -> str:
     return "Explorer" if IS_WINDOWS else "Finder" if IS_MAC else "file manager"
 

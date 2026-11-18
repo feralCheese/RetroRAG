@@ -113,11 +113,13 @@ class ImageContents(QGroupBox):
     changed = Signal(list)          # ids of documents added to the library
     create_like = Signal(int)       # system id: open the Create dialog
 
-    def __init__(self, lib: Library):
+    def __init__(self, lib: Library, standalone: bool = False):
         super().__init__("Disk contents")
         self.lib = lib
         self.doc: Document | None = None
         self.img: media.Image | None = None
+        self.title_text = ""
+        self.standalone = standalone          # an image file that isn't in the library (Open disk / tape image)
         v = QVBoxLayout(self)
         self.head = QLabel()
         self.head.setObjectName("muted")
@@ -154,6 +156,9 @@ class ImageContents(QGroupBox):
         row.addStretch()
         row.addWidget(self.b_new)
         v.addLayout(row)
+        if standalone:
+            self.b_add.hide()
+            self.b_new.hide()
         self.apply_icons()
         self.hide()
 
@@ -170,14 +175,18 @@ class ImageContents(QGroupBox):
             self.hide()
             return False
         try:
-            self.img = fmt.open(self.lib.abspath(d.path).read_bytes())
+            img = fmt.open(self.lib.abspath(d.path).read_bytes())
         except Exception as e:
             self.setTitle("Disk / tape contents")
             self.head.setText(f"Could not read this {fmt.name}: {e}")
             self.tree.clear()
             self.show()
             return True
-        img = self.img
+        return self.show_image(img, d.title)
+
+    def show_image(self, img: media.Image, title: str) -> bool:
+        self.img, self.title_text = img, title
+        fmt = img.fmt
         word = media.medium_word(fmt)
         self.setTitle(f"{word} contents - {fmt.name}")
         bits = ([f"<b>{word} name:</b> {img.label}"] if img.label else []) + img.info
@@ -198,10 +207,11 @@ class ImageContents(QGroupBox):
             if e.is_dir:
                 items[e.name] = it
         self.tree.expandAll()
-        n = max(1, min(14, len(img.entries())))
-        rowh = max(20, self.tree.sizeHintForRow(0)) if img.entries() else 22
-        hdr = max(24, self.tree.header().sizeHint().height())
-        self.tree.setFixedHeight(hdr + n * rowh + 2 * self.tree.frameWidth() + 6)
+        if not self.standalone:               # on the Document tab the list is as tall as its contents
+            n = max(1, min(14, len(img.entries())))
+            rowh = max(20, self.tree.sizeHintForRow(0)) if img.entries() else 22
+            hdr = max(24, self.tree.header().sizeHint().height())
+            self.tree.setFixedHeight(hdr + n * rowh + 2 * self.tree.frameWidth() + 6)
         self._sel_changed()
         self.show()
         return True
@@ -226,7 +236,7 @@ class ImageContents(QGroupBox):
         if e.is_dir:
             return
         try:
-            ImageFileDialog(self, self.img, e, self.doc.title).exec()
+            ImageFileDialog(self, self.img, e, self.title_text).exec()
         except Exception as ex:
             QMessageBox.warning(self, "View file", f"Could not read {e.name}: {ex}")
 
@@ -235,7 +245,7 @@ class ImageContents(QGroupBox):
         if not d:
             return
         names = self._names() or None
-        dest = Path(d) / media.safe_host_name(self.doc.title) if not names else Path(d)
+        dest = Path(d) / media.safe_host_name(self.title_text) if not names else Path(d)
         try:
             out = media_ops.extract_to_folder(self.img, names, dest)
         except Exception as e:
@@ -257,6 +267,78 @@ class ImageContents(QGroupBox):
             return
         QApplication.restoreOverrideCursor()
         self.changed.emit(ids)
+
+
+# =========================================================================== any image file, not in the library
+def image_file_filter() -> str:
+    exts = sorted(media.media_exts())
+    return (f"Disk and tape images ({' '.join('*' + e for e in exts)} *.zip);;"
+            + ";;".join(f"{f.name} ({' '.join('*' + e for e in f.exts)})" for f in media.all_formats())
+            + ";;All files (*)")
+
+
+def image_from_file(parent, path: Path):
+    """Open an image file (or the image inside a zip) -> (image, title, path of the image file) or None."""
+    import tempfile
+    import zipfile
+    path = Path(path)
+    if path.suffix.lower() == ".zip" and zipfile.is_zipfile(path):
+        with zipfile.ZipFile(path) as zf:
+            members = [m for m in zf.namelist() if Path(m).suffix.lower() in media.media_exts() | {".md"}]
+            found = []
+            for m in members:
+                data = zf.read(m)
+                if media.detect(data, Path(m).suffix):
+                    found.append((m, data))
+        if not found:
+            QMessageBox.information(parent, "Open disk / tape image", f"There's no disk or tape image in {path.name}.")
+            return None
+        pick = found[0]
+        if len(found) > 1:
+            from PySide6.QtWidgets import QInputDialog
+            name, ok = QInputDialog.getItem(parent, "Open disk / tape image", f"{path.name} holds {len(found)} images:",
+                                            [m for m, _ in found], 0, False)
+            if not ok:
+                return None
+            pick = next(f for f in found if f[0] == name)
+        tmp = Path(tempfile.mkdtemp(prefix="retrorag-open-"))
+        import atexit
+        import shutil
+        atexit.register(shutil.rmtree, tmp, True)          # kept until RetroRAG closes (it may be added later)
+        target = tmp / Path(pick[0]).name
+        target.write_bytes(pick[1])
+        path = target
+    try:
+        img = media.open_image(path)
+    except Exception as e:
+        QMessageBox.warning(parent, "Open disk / tape image", f"Can't read {path.name}: {e}")
+        return None
+    return img, path.stem, path
+
+
+class ImageBrowserDialog(QDialog):
+    """Look inside a disk / tape image file and extract from it, without adding it to the library."""
+    add_to_library = Signal(str)          # path of the image file
+
+    def __init__(self, parent, lib: Library, img: media.Image, title: str, path: Path):
+        super().__init__(parent)
+        self.path = path
+        self.setWindowTitle(f"{path.name} - {img.fmt.name}")
+        self.resize(820, 600)
+        v = QVBoxLayout(self)
+        note = QLabel("This image isn't in the library. View or extract its files here, or add it to the library.")
+        note.setObjectName("muted")
+        note.setWordWrap(True)
+        v.addWidget(note)
+        self.contents = ImageContents(lib, standalone=True)
+        self.contents.show_image(img, title)
+        v.addWidget(self.contents, 1)
+        bb = QDialogButtonBox(QDialogButtonBox.Close)
+        add = bb.addButton("Add image to library…", QDialogButtonBox.ActionRole)
+        add.setIcon(theme.icon("add"))
+        add.clicked.connect(lambda: (self.add_to_library.emit(str(self.path)), self.accept()))
+        bb.rejected.connect(self.reject)
+        v.addWidget(bb)
 
 
 # =========================================================================== creating an image
@@ -366,7 +448,9 @@ class CreateImageDialog(QDialog):
         self.system = QComboBox()
         for label, sid in system_choices(lib):
             self.system.addItem(label, sid)
-        self.system.setCurrentIndex(max(0, self.system.findData(system_id)))
+        self.system.addItem("(none - just Save to file)", None)
+        self.system.setCurrentIndex(self.system.findData(system_id) if system_id is not None
+                                    else self.system.count() - 1)
         self.system.currentIndexChanged.connect(self._fill_formats)
         self.fmt_box = QComboBox()
         self.fmt_box.currentIndexChanged.connect(self._format_changed)
@@ -546,6 +630,7 @@ class CreateImageDialog(QDialog):
     def _add_docs(self):
         sid = self.system.currentData()
         if not sid:
+            QMessageBox.information(self, "From library", "Choose a system first - its documents are listed.")
             return
         dlg = _DocPicker(self, self.lib, sid)
         if dlg.exec():
@@ -702,8 +787,10 @@ class CreateImageDialog(QDialog):
             return False
         total = sum(len(r["nf"].data) for r in self.rows)
         self.status.setText(f"<span style='color:{t['ok']}'>&#10003; Ready: "
-                            f"{len(self.rows)} file(s), {total:,} bytes of data, image {len(raw) // 1024:,} KB</span>")
-        self.b_create.setEnabled(True)
+                            f"{len(self.rows)} file(s), {total:,} bytes of data, image {len(raw) // 1024:,} KB</span>"
+                            + ("" if self.system.currentData() else
+                               "  - choose a system to create it in the library, or use Save to file…"))
+        self.b_create.setEnabled(self.system.currentData() is not None)
         self.b_save.setEnabled(True)
         return True
 
@@ -726,7 +813,7 @@ class CreateImageDialog(QDialog):
             self.status.setText(f"&#10003; Saved to {fn}")
 
     def _create(self):
-        if not self._validate():
+        if not self._validate() or self.system.currentData() is None:
             return
         s = self.lib.system(self.system.currentData())
         try:

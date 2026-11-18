@@ -21,10 +21,20 @@ datasheets, the source code implementing a chip, errata, newer revisions) - foll
 `read_document` when the question spans several documents. Cite results as 'System / Document, page N'.
 Text from scanned documents is OCR output and may contain recognition errors.
 
-Disk and tape images (D64, D81, ADF, ST, MSA, IMG, SSD, DSD, ADL, TAP, TZX, MDR) can be opened and made:
-`list_image_contents` shows an image's directory, `read_image_file` reads a file from it (BASIC programs come back
-as listings), `add_image_files_to_library` adds its files as documents, and `create_image` builds a new image from
-text, BASIC source, base64 data or library documents (see `list_media_formats` for each system's formats)."""
+Disk and tape images (D64, D81, ADF, ST, MSA, IMG, SSD, DSD, ADL, TAP, TZX, MDR):
+- An image in the library is given by its doc_id; one the user has uploaded by its `upload` reference.
+- Files the user attached in the chat can NOT be passed to these tools directly. Call `get_upload_link`, give the
+  user the link (they drop the file on that page in their browser; zips are unpacked), then `list_uploads`.
+  If you can run code that has the file, you can PUT it to the link yourself. Small files can go through
+  `upload_file` (base64) instead.
+- `list_image_contents` and `read_image_file` show what's on an image (BASIC programs come back as listings).
+- `extract_image_files` gives download links for the files on an image (one zip, plus each file), without adding
+  anything to the library. `add_file_to_library` adds an uploaded file; `add_image_files_to_library` adds the files
+  on a library image as documents.
+- `create_image` builds a new image from BASIC source, text, base64 data, uploads or library documents, and either
+  adds it to the library or just returns a download link (add_to_library=false). `list_media_formats` shows each
+  system's formats.
+- Give the user the download links you get back."""
 
 
 def build_server(library: str | Path):
@@ -110,14 +120,18 @@ def build_server(library: str | Path):
             return [{"error": f"No document with id {doc_id}"}]
         return [{k: v for k, v in l.items() if k not in ("rel_id", "origin")} for l in related(lib, doc_id)]
 
-    # ------------------------------------------------------------------ disk / tape images
-    from . import media, media_ops
+    # ------------------------------------------------------------------ disk / tape images, uploads, downloads
+    from . import media, media_ops, transfer
 
-    def _image_doc(doc_id: int):
-        d = lib.document(doc_id)
-        if not d:
-            raise ValueError(f"No document with id {doc_id}")
-        return d, media_ops.open_doc(lib, d)
+    def _fail(e) -> dict:
+        return {"error": str(e)}
+
+    def _index(ids):
+        try:
+            from .indexer import build_index
+            build_index(lib, list(ids), log=lambda m: None)
+        except Exception:
+            pass                       # the app indexes it later
 
     @mcp.tool()
     def list_media_formats(system: str | None = None) -> dict:
@@ -134,98 +148,168 @@ def build_server(library: str | Path):
         return out
 
     @mcp.tool()
-    def list_image_contents(doc_id: int) -> dict:
-        """The directory of a disk or tape image in the library (doc_id from search_docs / list_documents):
-        file names, types (PRG/SEQ, Program/Bytes, BASIC ...), sizes, load / exec addresses, disk name and free
-        space."""
+    def get_upload_link() -> dict:
+        """Get a link the user can open in a browser to send files to RetroRAG (disk/tape images, zips, documents).
+        Use this whenever the user has a file in the chat that a RetroRAG tool should work on: tools can't read chat
+        attachments. Give the user the link, ask them to drop the file there and tell you when it's done, then call
+        list_uploads with the upload_id."""
         try:
-            d, img = _image_doc(doc_id)
-        except (ValueError, media.MediaError) as e:
-            return {"error": str(e)}
-        return {"doc_id": d.id, "title": d.title, **media_ops.image_info(img)}
+            return transfer.upload_link(lib)
+        except transfer.TransferError as e:
+            return _fail(e)
 
     @mcp.tool()
-    def read_image_file(doc_id: int, name: str, encoding: str = "text", max_chars: int = 60000) -> dict:
-        """Read one file from a disk or tape image.
+    def upload_file(filename: str, data_base64: str, upload_id: str | None = None) -> dict:
+        """Send a small file (up to a few hundred KB) straight to RetroRAG as base64, instead of an upload link.
+        Zips are unpacked. Returns the `upload` reference(s) to use with the other tools."""
+        import base64
+        import binascii
+        try:
+            tid = upload_id or transfer.new_area(lib, "upload")[0]
+            refs = transfer.save_file(lib, tid, filename, base64.b64decode(data_base64, validate=False))
+        except (transfer.TransferError, binascii.Error, ValueError) as e:
+            return _fail(e)
+        return {"upload_id": tid, "uploads": refs}
+
+    @mcp.tool()
+    def list_uploads(upload_id: str) -> dict:
+        """The files the user has sent with an upload link (zips already unpacked). Each has an `upload` reference
+        for list_image_contents, read_image_file, extract_image_files, add_file_to_library and create_image;
+        disk and tape images show their format."""
+        try:
+            files = transfer.list_area(lib, upload_id)
+        except transfer.TransferError as e:
+            return _fail(e)
+        out = {"upload_id": upload_id, "files": files}
+        if not files:
+            out["note"] = "Nothing has arrived yet - ask the user to drop the file on the upload page and try again."
+        return out
+
+    @mcp.tool()
+    def add_file_to_library(upload: str, system: str, category: str | None = None, title: str | None = None) -> dict:
+        """Add an uploaded file to the library, under a system (name or alias). upload: a reference from
+        list_uploads, or just the upload_id to add every file in it. Disk and tape images go to "Disk & Tape
+        Images" unless you give a category. Returns the new doc_ids (then e.g. list_image_contents(doc_id))."""
+        s = lib.find_system(system)
+        if not s:
+            return {"error": f"No system matching '{system}' (see list_systems)"}
+        try:
+            ids = media_ops.add_upload_to_library(lib, upload, s, category, title, log=lambda m: None)
+        except (transfer.TransferError, media.MediaError, OSError) as e:
+            return _fail(e)
+        _index(ids)
+        return {"added": [{"doc_id": i, "title": lib.document(i).title, "category": lib.document(i).category}
+                          for i in ids]}
+
+    @mcp.tool()
+    def list_image_contents(doc_id: int | None = None, upload: str | None = None) -> dict:
+        """The directory of a disk or tape image: file names, types (PRG/SEQ, Program/Bytes, BASIC ...), sizes,
+        load / exec addresses, disk name and free space. Give doc_id for an image in the library, or upload for one
+        the user sent (from list_uploads)."""
+        try:
+            img, title, d = media_ops.open_source(lib, doc_id, upload)
+        except (transfer.TransferError, media.MediaError, OSError) as e:
+            return _fail(e)
+        return {**({"doc_id": d.id} if d else {"upload": upload}), "title": title, **media_ops.image_info(img)}
+
+    @mcp.tool()
+    def read_image_file(name: str, doc_id: int | None = None, upload: str | None = None, encoding: str = "text",
+                        max_chars: int = 60000) -> dict:
+        """Read one file from a disk or tape image (doc_id in the library, or upload from list_uploads).
 
         Args:
-            doc_id: the image document.
             name: the file's name as list_image_contents shows it (folders joined with /).
             encoding: "text" (default) - BASIC programs come back as a listing, text files as text, anything
                       else as a hex dump; or "base64" for the exact bytes.
             max_chars: limit on the returned text.
         """
         try:
-            d, img = _image_doc(doc_id)
+            img, _, _ = media_ops.open_source(lib, doc_id, upload)
             e = img.find(name)
-        except (ValueError, media.MediaError) as ex:
-            return {"error": str(ex)}
+        except (transfer.TransferError, media.MediaError, OSError) as ex:
+            return _fail(ex)
         info = media_ops.entry_info(img, e)
         if encoding == "base64":
             import base64
             data = img.read(e)[:4 << 20]
             return {**info, "encoding": "base64", "data": base64.b64encode(data).decode("ascii")}
-        how, text = media.text_view(img, e, limit=max(1000, min(max_chars, 400000)))
-        return {**info, "shown_as": how, "text": text[:max(1000, min(max_chars, 400000))]}
+        limit = max(1000, min(max_chars, 400000))
+        how, text = media.text_view(img, e, limit=limit)
+        return {**info, "shown_as": how, "text": text[:limit]}
+
+    @mcp.tool()
+    def extract_image_files(doc_id: int | None = None, upload: str | None = None,
+                            names: list[str] | None = None) -> dict:
+        """Extract the files on a disk or tape image (doc_id in the library, or upload from list_uploads) without
+        adding anything to the library. Returns a download link for a zip of them all and for each file - give
+        these to the user. names: which files (default: all). Files are saved as stored (PRG files keep their load
+        address, Acorn files get .inf files, Spectrum BASIC programs come as one-file .tap tapes)."""
+        try:
+            img, title, _ = media_ops.open_source(lib, doc_id, upload)
+            return media_ops.extract_to_area(lib, img, names or None, title)
+        except (transfer.TransferError, media.MediaError, OSError) as e:
+            return _fail(e)
 
     @mcp.tool()
     def add_image_files_to_library(doc_id: int, names: list[str] | None = None) -> dict:
-        """Add files from a disk/tape image to the library as their own documents (BASIC programs as listings,
-        text as text), linked to the image. names: which files (default: all)."""
+        """Add the files on a library disk/tape image to the library as their own documents (BASIC programs as
+        listings, text as text), linked to the image. names: which files (default: all). For an image the user
+        uploaded, add the image first with add_file_to_library."""
         d = lib.document(doc_id)
         if not d:
             return {"error": f"No document with id {doc_id}"}
         try:
             ids = media_ops.add_entries_to_library(lib, d, names or None, log=lambda m: None)
         except media.MediaError as e:
-            return {"error": str(e)}
+            return _fail(e)
         _index(ids)
         return {"added": [{"doc_id": i, "title": lib.document(i).title} for i in ids]}
 
-    def _index(ids):
-        try:
-            from .indexer import build_index
-            build_index(lib, list(ids), log=lambda m: None)
-        except Exception:
-            pass                       # the app indexes it later
-
     @mcp.tool()
-    def create_image(system: str, format: str, files: list[dict], label: str = "", title: str | None = None,
-                     options: dict | None = None) -> dict:
-        """Create a disk or tape image and add it to the library (category "Disk & Tape Images").
+    def create_image(format: str, files: list[dict], system: str | None = None, label: str = "",
+                     title: str | None = None, options: dict | None = None, add_to_library: bool = True) -> dict:
+        """Create a disk or tape image.
 
         Args:
-            system: the system it's for (name or alias); see list_media_formats(system) for its formats.
-            format: format id, e.g. "d64", "d81", "adf", "st", "msa", "img", "ssd", "dsd", "adl", "tap", "tzx", "mdr".
+            format: format id, e.g. "d64", "d81", "adf", "st", "msa", "img", "ssd", "dsd", "adl", "tap", "tzx", "mdr"
+                    (list_media_formats(system) shows which a system uses).
             files: one entry per file:
                 {"name": "HELLO", "text": "10 PRINT \"HI\"\n20 GOTO 10", "basic": true}   - BASIC source, tokenised
                     for the machine (Commodore: write in CAPITALS; Spectrum: 48K keywords; BBC BASIC)
                 {"name": "README", "text": "..."}            - a text file (converted to the machine's character set)
                 {"name": "CODE", "base64": "...", "type": "Bytes", "load": "$8000"}   - exact bytes
+                {"upload": "<upload_id>/<file>"}             - a file the user uploaded (list_uploads)
                 {"doc_id": 123}                             - a file already in the library
-                Optional: "type" (see list_media_formats: PRG/SEQ/USR, Program/Bytes, BASIC ...), "load" / "exec"
+                Optional: "type" (PRG/SEQ/USR, Program/Bytes, BASIC ... see list_media_formats), "load" / "exec"
                 addresses ("$C000", "&1900", "0xC000" or a number), "autostart" (Spectrum BASIC line).
                 Folders (ADF, ST, IMG, ADL): use "/" in the name, e.g. "s/startup-sequence".
+            system: the system it's for (name or alias). Needed when add_to_library is true.
             label: disk / tape name.
-            title: document title in the library (default: the label).
+            title: document title / file name (default: the label).
             options: format options, e.g. {"size": "pc720"} for img, {"fs": "ffs", "bootable": true} for adf,
                      {"boot": 3} for ssd/dsd/adl (see list_media_formats).
-        Returns the new document's id and where the image file is.
+            add_to_library: true (default) adds it to the library ("Disk & Tape Images"); false only makes it and
+                     returns a download link for the user.
         """
-        s = lib.find_system(system)
-        if not s:
+        s = lib.find_system(system) if system else None
+        if system and not s:
             return {"error": f"No system matching '{system}'"}
+        if add_to_library and not s:
+            return {"error": "Say which system it's for (system=...), or set add_to_library=false to just get a "
+                             "download link"}
         try:
             fmt = media.get(format)
             nfs, sources = media_ops.files_from_specs(lib, fmt, files)
+            if not add_to_library:
+                return media_ops.image_to_area(lib, fmt.id, nfs, label=label, title=title, options=options or {})
             doc_id = media_ops.create_image_doc(lib, s, fmt.id, nfs, label=label, title=title, options=options or {},
                                                 source_doc_ids=sources, log=lambda m: None)
-        except (media.MediaError, ValueError, TypeError) as e:
-            return {"error": str(e)}
+        except (media.MediaError, transfer.TransferError, ValueError, TypeError, OSError) as e:
+            return _fail(e)
         _index([doc_id])
         d = lib.document(doc_id)
         img = media_ops.open_doc(lib, d)
-        return {"doc_id": doc_id, "title": d.title, "system": s.name, "path": str(lib.abspath(d.path)),
+        return {"doc_id": doc_id, "title": d.title, "system": s.name, "path_on_retrorag_pc": str(lib.abspath(d.path)),
                 **media_ops.image_info(img)}
 
     @mcp.tool()

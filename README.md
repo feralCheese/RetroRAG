@@ -146,7 +146,10 @@ a strong median denoise and keeps the better result. This helps a lot with speck
   right-click documents → *Put on a new disk / tape image…*. Add files from the PC or the library, type in a
   **BASIC program** (tokenised for the machine, so `LOAD` and `RUN` / `CHAIN` work), or a text file. Set names,
   types and load / exec / autostart where the format has them, then **Create in library** or **Save to file…**.
-  The dialog checks as you go that everything fits.
+  The dialog checks as you go that everything fits. Choose *(none - just Save to file)* as the system to make an
+  image without touching the library.
+- **Images that aren't in the library**: *File → Open disk / tape image…* (Ctrl+Shift+O) opens any image file, or
+  the image inside a zip. You can view and extract its files there, or click *Add image to library…*.
 - **Searchable**: an image's directory, BASIC listings and short text files go into its info card, so the AI can
   answer "which disk has the sprite editor on it?".
 - **Command line**: `retrorag-cli image formats | list IMG | read IMG NAME | extract IMG --to DIR | create FORMAT OUT FILES… [--basic NAME=prog.bas] [--opt size=pc720]`.
@@ -162,7 +165,7 @@ Start the HTTP servers with **▶ Start servers** in the toolbar. You can make t
 |---|---|
 | **Claude Desktop** | Connect AI → *Add to Claude Desktop* (edits `claude_desktop_config.json` and keeps a `.bak`), then restart Claude. |
 | **Claude Code** | Connect AI → copy the `claude mcp add retrorag …` command. |
-| **Unsloth Studio** | Chat → MCP → *Add custom MCP*: URL `http://127.0.0.1:8766/mcp` (add header `Authorization: Bearer <token>` if you set one). Turn on *Use MCP Servers*. |
+| **Unsloth Studio** | Chat → MCP → *Add custom MCP*: URL `http://127.0.0.1:8766/mcp` (or this PC's IP address from another PC). If you set an access token: *Add header*, header name `Authorization`, value `Bearer <token>` (Connect AI → *Copy header value*). Turn on *Use MCP Servers*. |
 | LM Studio, Open WebUI, Cursor, Continue, Jan… | MCP over HTTP: `http://127.0.0.1:8766/mcp` |
 | Open WebUI (OpenAPI tools), scripts | REST: `http://127.0.0.1:8765/search?q=...&system=C64`, docs at `/docs`, spec at `/openapi.json` |
 | Anything else / offline | Export → Markdown corpus (YAML front matter per doc) or JSONL chunks |
@@ -170,13 +173,36 @@ Start the HTTP servers with **▶ Start servers** in the toolbar. You can make t
 MCP tools: `search_docs(query, system?, category?, limit, mode)`, `list_systems`, `list_documents`,
 `read_document(doc_id, page_from?, page_to?)`, `get_related(doc_id)`, `get_context(chunk_id)`.
 
-Disk and tape images: `list_media_formats(system?)`, `list_image_contents(doc_id)`,
-`read_image_file(doc_id, name, encoding=text|base64)`, `add_image_files_to_library(doc_id, names?)` and
-`create_image(system, format, files, label?, title?, options?)`. Each file is given as BASIC source
-(`{"name": "HELLO", "basic": true, "text": "10 PRINT \"HI\""}`), plain text, base64 bytes or the `doc_id` of a
-library document. The new image goes into the library (category *Disk & Tape Images*), and the tool returns its
-path. REST has the same: `GET /media/formats`, `GET /documents/{id}/image`, `GET /documents/{id}/image/file?name=…`
-(`&raw=true` downloads the file) and `POST /images`.
+Disk and tape images:
+
+| Tool | Does |
+|---|---|
+| `list_media_formats(system?)` | the formats, and which ones a system uses |
+| `get_upload_link()` | a page where you drop a file for the AI to use (see below) |
+| `upload_file(filename, data_base64)` | sends a small file directly |
+| `list_uploads(upload_id)` | what arrived (zips are unpacked) |
+| `add_file_to_library(upload, system, category?)` | adds an uploaded file to the library |
+| `list_image_contents(doc_id or upload)` | an image's directory |
+| `read_image_file(name, doc_id or upload)` | one file: BASIC as a listing, text, a hex dump, or base64 |
+| `extract_image_files(doc_id or upload, names?)` | download links for the files (one zip, and each file), without using the library |
+| `add_image_files_to_library(doc_id, names?)` | adds a library image's files as documents |
+| `create_image(format, files, system?, label?, title?, options?, add_to_library?)` | builds an image; adds it to the library, or with `add_to_library=false` just returns a download link |
+
+`create_image` takes each file as BASIC source (`{"name": "HELLO", "basic": true, "text": "10 PRINT \"HI\""}`),
+plain text, base64 bytes, an `upload` or the `doc_id` of a library document.
+
+**Files in the chat.** Chat apps (Unsloth Studio, Claude…) don't pass attached files to tools. So when you give
+the AI a disk image or a zip, it calls `get_upload_link` and gives you a link: open it in a browser on any PC that
+can reach RetroRAG and drop the file there, then tell the AI it's done. An AI that can run code can send the file to
+the same link itself. Anything the AI makes for you (a new image, extracted files) comes back as a download link.
+Links work without the access token, because each one has its own long random key. Upload pages stop accepting files
+after 2 hours, and everything is deleted after 24 hours (it's kept in the library's `_transfer` folder until then).
+The links need RetroRAG's servers running (*Start servers*).
+
+REST has the same: `GET /media/formats`, `GET /documents/{id}/image`, `GET /documents/{id}/image/file?name=…`
+(`&raw=true` downloads the file), `POST /documents/{id}/image/extract`, `POST /uploads` (a new upload link),
+`GET /uploads/{id}`, `GET /uploads/{id}/image?file=…`, `POST /uploads/{id}/extract`, `POST /uploads/{id}/add` and
+`POST /images` (with `add_to_library`).
 
 Each search hit carries a short `related` list (title, relationship, doc id), so the AI can tell the SID
 chapter has a datasheet, a pinout and an emulator implementation, and fetch them only if needed.
@@ -287,9 +313,9 @@ Add `--library <folder>` to any command to use a library other than the last-ope
 - Semantic search loads all vectors into memory. That's fine for hundreds of thousands of chunks. Indexing a
   very large source tree (e.g. all of MAME) is slow to embed, so consider adding just the relevant drivers and
   devices.
-- The servers are read-only apart from creating disk / tape images (and adding their files), which writes into
-  the library. The REST API allows any origin (CORS) so browser-based tools can call it. Keep it on 127.0.0.1 or
-  set an access token.
+- The servers are read-only apart from disk / tape images: creating them and adding files writes into the library,
+  and uploads and downloads use its `_transfer` folder. The REST API allows any origin (CORS) so browser-based
+  tools can call it. Keep it on 127.0.0.1 or set an access token.
 - Disk and tape support covers ordinary sector images. Flux-level and copy-protection formats (G64, IPF, STX, WOZ,
   SCP…) aren't opened, though they still get an info card. Commodore REL files and Spectrum array files can be
   read but not created.

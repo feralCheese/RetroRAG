@@ -28,7 +28,8 @@ CODE_NAMES = {"makefile", "cmakelists.txt", "readme", "license", "copying", "cha
 PDF_EXT = {".pdf"}
 IMAGE_EXT = {".gif", ".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".webp", ".jfif", ".pbm", ".pgm", ".ppm"}
 ARCHIVE_EXT = {".zip"}
-SKIP_DIRS = {".git", ".svn", ".hg", "node_modules", "__pycache__", ".vs", ".idea", ".vscode", "_derived"}
+SKIP_DIRS = {".git", ".svn", ".hg", "node_modules", "__pycache__", ".vs", ".idea", ".vscode", "_derived",
+             "_transfer"}
 SKIP_EXT = {".o", ".obj", ".exe", ".dll", ".so", ".dylib", ".a", ".lib", ".pdb", ".pyc", ".class", ".DS_Store"}
 DERIVED_SUFFIXES = (".ocr.json",)
 
@@ -125,7 +126,8 @@ def add_file(lib: Library, system: System, category: str, src: Path, *, copy: bo
     if dup:
         log(f"Skipped {src.name}: identical to existing '{dup['title']}'")
         return None
-    if copy and lib.root in src.resolve().parents:
+    in_transfer = (lib.root / "_transfer").resolve() in src.resolve().parents   # uploads: temporary, so copy
+    if copy and lib.root in src.resolve().parents and not in_transfer:
         stored = lib.relpath(src)            # already inside the library (re-import / extracted archive)
     elif copy:
         dest_dir = lib.system_dir(system) / slugify(category) / group_path

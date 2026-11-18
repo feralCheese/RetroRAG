@@ -575,6 +575,21 @@ class ConnectDialog(QDialog):
         rest = f"http://{host}:{st.api_port}"
         mcp_url = f"http://{host}:{st.mcp_port}/mcp"
         auth = f"\nHeader:  Authorization: Bearer {st.api_token}" if st.api_token else ""
+        from ..platform_util import lan_address
+        lan = lan_address() if st.api_host == "0.0.0.0" else None
+        lan_url = f"http://{lan}:{st.mcp_port}/mcp" if lan else None
+        self.header_value = f"Bearer {st.api_token}" if st.api_token else ""
+        row = "<tr><td style='padding-right:14px;color:gray'>{}</td><td>{}</td></tr>"
+        uns_rows = [row.format("Display name", "<code>RetroRAG</code>"),
+                    row.format("URL", f"<code>{mcp_url}</code>" + (" &nbsp;(Studio on this PC)" if lan_url else ""))]
+        if lan_url:
+            uns_rows.append(row.format("", f"<code>{lan_url}</code> &nbsp;(Studio on another PC)"))
+        if st.api_token:
+            uns_rows.append(row.format("Custom headers", "click <b>Add header</b>, then:"))
+            uns_rows.append(row.format("&nbsp;&nbsp;header name", "<code>Authorization</code>"))
+            uns_rows.append(row.format("&nbsp;&nbsp;header value", f"<code>Bearer {st.api_token}</code> &nbsp;"
+                                       "(the word Bearer, a space, then the token)"))
+        uns_table = "<table cellspacing=2>" + "".join(uns_rows) + "</table>"
         claude_code = "claude mcp add retrorag --scope user " + " ".join(
             [f'-e {k}="{v}"' for k, v in env.items()] + ["--", f'"{cmd}"'] + [f'"{a}"' if " " in a else a for a in args])
         state = ("<span style='color:green'>running</span>" if servers_running
@@ -586,14 +601,15 @@ Or paste this into <code>claude_desktop_config.json</code> under <code>"mcpServe
 <pre>{json.dumps({"retrorag": entry}, indent=2)}</pre>
 <h3>Claude Code</h3><pre>{claude_code}</pre>
 <h3>Unsloth Studio</h3>
-<p>HTTP servers are {state}. In Studio chat: <b>MCP → Add custom MCP</b>, Display name <code>RetroRAG</code>,
-URL <code>{mcp_url}</code>{' and add header <code>Authorization: Bearer ' + st.api_token + '</code>' if st.api_token else ''}.
-Test connection → Add server, and make sure <b>Use MCP Servers</b> is on. (HTTP is recommended: Studio disables local
-stdio commands when LAN/remote access is enabled.) If Studio runs on another PC, set <i>Listen on</i> to 0.0.0.0 and an
-access token in Settings → Servers, and use this PC's IP address in the URL.</p>
+<p>HTTP servers are {state}. In Studio chat: <b>MCP → Add custom MCP</b>, then fill in:</p>
+{uns_table}
+<p>Test connection → Add server, and make sure <b>Use MCP Servers</b> is on. (HTTP is recommended: Studio disables local
+stdio commands when LAN/remote access is enabled.)""" + ("" if lan_url else """ If Studio runs on another PC, set
+<i>Listen on</i> to 0.0.0.0 and an access token in Settings → Servers, restart the servers and open this dialog again
+for the address to use.""") + f"""</p>
 <p>To use Unsloth for <b>embeddings</b> too: Settings → Embeddings → preset <i>Unsloth Studio</i>, paste a Studio API key.</p>
 <h3>Other MCP clients over HTTP</h3>
-<p>LM Studio, Open WebUI, Cursor, Continue, Jan, AnythingLLM…: streamable-HTTP MCP URL <code>{mcp_url}</code>{auth}</p>
+<p>LM Studio, Open WebUI, Cursor, Continue, Jan, AnythingLLM…: streamable-HTTP MCP URL <code>{mcp_url}</code>{f' (from another PC: <code>{lan_url}</code>)' if lan_url else ''}{auth}</p>
 <h3>REST / OpenAPI</h3>
 <p>Search: <code>{rest}/search?q=SID+filter&amp;system=C64</code> · Docs: <code>{rest}/docs</code> ·
 Spec: <code>{rest}/openapi.json</code> (Open WebUI → Settings → Tools → add OpenAPI server <code>{rest}</code>)</p>
@@ -609,12 +625,30 @@ to get the right paths.</p>"""
         b2 = QPushButton("Copy Claude Desktop JSON")
         b2.clicked.connect(lambda: QApplication.clipboard().setText(json.dumps({"retrorag": entry}, indent=2)))
         b3 = QPushButton("Copy Claude Code command"); b3.clicked.connect(lambda: QApplication.clipboard().setText(claude_code))
-        b4 = QPushButton("Copy MCP URL"); b4.clicked.connect(lambda: QApplication.clipboard().setText(mcp_url))
-        for b in (b1, b2, b3, b4):
+        b4 = QPushButton("Copy MCP URL")
+        b4.clicked.connect(lambda: QApplication.clipboard().setText(lan_url or mcp_url))
+        if lan_url:
+            b4.setToolTip(f"Copies the network address ({lan_url}), which works from this PC and others")
+        for b in (b1, b2, b3):            # Claude on the first row, HTTP clients (Unsloth etc.) on the second
             h.addWidget(b)
         h.addStretch()
-        close = QPushButton("Close"); close.clicked.connect(self.accept); h.addWidget(close)
         v.addLayout(h)
+        h2 = QHBoxLayout()
+        h2.addWidget(b4)
+        if self.header_value:
+            b5 = QPushButton("Copy header value")
+            b5.setToolTip("Copies 'Bearer <token>' - paste it as the value of a header named Authorization")
+            b5.clicked.connect(lambda: QApplication.clipboard().setText(self.header_value))
+            h2.addWidget(b5)
+        h2.addStretch()
+        close = QPushButton("Close"); close.clicked.connect(self.accept); h2.addWidget(close)
+        v.addLayout(h2)
+        # the focused button is drawn bold (default-button style) but sized for normal text: leave room for bold
+        from PySide6.QtGui import QFont, QFontMetrics
+        for b in self.findChildren(QPushButton):
+            f = QFont(b.font())
+            f.setWeight(QFont.DemiBold)
+            b.setMinimumWidth(QFontMetrics(f).horizontalAdvance(b.text()) + 36)
 
     def install_claude_desktop(self):
         paths = [p for p in claude_desktop_config_paths() if p.parent.exists()] or claude_desktop_config_paths()[:1]
