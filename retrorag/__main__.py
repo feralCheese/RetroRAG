@@ -40,6 +40,8 @@ def main(argv: list[str] | None = None) -> int:
     ad = sub.add_parser("add"); ad.add_argument("--system", required=True); ad.add_argument("--category", default="Other"); ad.add_argument("--link", action="store_true", help="don't copy, reference in place"); ad.add_argument("paths", nargs="+")
     e = sub.add_parser("export"); e.add_argument("--markdown"); e.add_argument("--jsonl"); e.add_argument("--embeddings", action="store_true")
     sub.add_parser("stats")
+    cfg = sub.add_parser("settings", help="show or change library settings, e.g. settings api_host=0.0.0.0")
+    cfg.add_argument("pairs", nargs="*", metavar="KEY=VALUE")
     args = p.parse_args(argv)
 
     if args.cmd in (None, "gui"):
@@ -109,6 +111,27 @@ def main(argv: list[str] | None = None) -> int:
             export_markdown(lib, Path(args.markdown))
         if args.jsonl:
             export_jsonl(lib, Path(args.jsonl), args.embeddings)
+        return 0
+    if args.cmd == "settings":
+        from dataclasses import fields
+        st, types = lib.settings, {f.name: f.type for f in fields(lib.settings)}
+        for pair in args.pairs:
+            key, _, val = pair.partition("=")
+            if key not in types:
+                print(f"Unknown setting '{key}'. Known: {', '.join(types)}")
+                return 2
+            cur = getattr(st, key)
+            if isinstance(cur, bool):
+                val = val.lower() in ("1", "true", "yes", "on")
+            elif isinstance(cur, int):
+                val = int(val)
+            setattr(st, key, val)
+        if args.pairs:
+            st.save(lib.root)
+            print("Saved.")
+        for f in fields(st):
+            v = getattr(st, f.name)
+            print(f"{f.name:>26} = {'***' if f.name in ('embed_api_key', 'api_token') and v else v}")
         return 0
     if args.cmd == "stats":
         for k, v in lib.stats().items():

@@ -185,6 +185,7 @@ the query too. Changing the model re-embeds everything on the next build.
 ---
 
 ## Command line
+Use `retrorag-cli` on Windows and `./retrorag-cli.sh` on Linux, macOS or a Pi.
 ```
 retrorag-cli stats
 retrorag-cli add --system "Commodore 64" --category "Schematics" C:\scans\c64_schematic.gif
@@ -194,6 +195,8 @@ retrorag-cli search "raster interrupt" --system C64
 retrorag-cli api                         # REST :8765 + MCP HTTP :8766
 retrorag-cli mcp [--http]                # MCP on stdio (what Claude Desktop runs) or HTTP
 retrorag-cli export --markdown D:\out  |  --jsonl chunks.jsonl [--embeddings]
+retrorag-cli settings                    # show library settings
+retrorag-cli settings api_host=0.0.0.0   # change them (handy on a headless server)
 ```
 Add `--library <folder>` to any command to use a library other than the last-opened one.
 
@@ -207,20 +210,91 @@ Add `--library <folder>` to any command to use a library other than the last-ope
   127.0.0.1 or set an access token.
 
 ## Platforms
-RetroRAG is built and tested on **Windows 10/11**. Everything it depends on (Python, Qt/PySide6, PyMuPDF,
-Tesseract, SQLite, FastAPI, MCP, Ollama) also runs on Linux, macOS and 64-bit Raspberry Pi OS, and a library
-folder can be copied between machines. Some details are still Windows-specific:
-- **Launchers and setup:** these are `.bat` files. On Linux or macOS, run `python3 -m venv .venv`, then
-  `.venv/bin/pip install -r requirements.txt`, then `.venv/bin/python -m retrorag`.
-- **Opening files:** "Open original", "Show in folder" and similar actions use Windows calls.
-- **Icons:** they come from the Windows icon font. Elsewhere buttons show text only.
-- **Claude Desktop:** "Add to Claude Desktop" knows only the Windows config location. Copying the JSON
-  works anywhere.
 
-A Raspberry Pi 4 or 5 running 64-bit OS makes a good always-on **headless server**. Build the library on a PC
-(OCR and embedding are much faster there), copy the folder over, and run `python -m retrorag api` so Claude,
-Unsloth Studio and other clients can reach REST and MCP over HTTP on your network. The Pi only needs the
-embedding model for queries, either Ollama on the Pi or `embed_url` pointed at your PC.
+| | Desktop app | Headless server (MCP / REST) | Tested |
+|---|---|---|---|
+| Windows 10/11 | yes | yes | fully: GUI, OCR, embeddings, MCP, REST, standalone .exe build |
+| Linux x86-64 | yes | yes | server, CLI, MCP and REST tested on Debian; GUI needs Qt's system libraries (below) |
+| Raspberry Pi 4/5, 64-bit Pi OS | yes (slow) | yes (recommended) | all dependencies have ARM64 builds for Pi OS Bookworm |
+| macOS (Apple Silicon / Intel) | yes | yes | all dependencies have macOS builds; not yet run on a Mac |
+
+32-bit Raspberry Pi OS isn't supported, because Qt and PyMuPDF don't publish builds for it.
+
+### Linux and macOS
+```bash
+git clone https://github.com/feralCheese/RetroRAG && cd RetroRAG
+./setup.sh                # creates .venv, installs packages, checks Tesseract
+./retrorag.sh             # starts the app
+./retrorag-cli.sh --help  # command line, MCP and REST server
+```
+Prerequisites:
+- **Debian, Ubuntu or Pi OS:** `sudo apt install python3 python3-venv tesseract-ocr libegl1 libxcb-cursor0`.
+- **Fedora:** `sudo dnf install python3 tesseract`.
+- **macOS:** `brew install python tesseract`.
+
+`./build_app.sh` makes a standalone copy in `dist/RetroRAG` for the machine it runs on. PyInstaller
+doesn't cross-compile, so build on a Mac for Macs and on a Pi for Pis. On macOS this produces a folder with
+the program inside, not a signed `.app` bundle.
+
+Settings live in `%APPDATA%\RetroRAG` on Windows, `~/Library/Application Support/RetroRAG` on macOS, and
+`~/.config/RetroRAG` on Linux, unless you use portable mode. "Show in folder" uses Explorer, Finder, or
+your Linux file manager. Without the Windows icon font, icons come from your Linux icon theme or Qt's
+built-in set.
+
+### Raspberry Pi as an always-on RAG server
+The best way to use a Pi is as the always-on server: do OCR, proofreading and indexing on your PC, then
+let the Pi answer the AI.
+
+1. On the Pi (64-bit Raspberry Pi OS, Pi 4 or 5 with 4 GB or more), install the prerequisites:
+
+   ```bash
+   sudo apt install python3-venv tesseract-ocr
+   ```
+
+   Then install without the GUI:
+
+   ```bash
+   git clone https://github.com/feralCheese/RetroRAG && cd RetroRAG && ./setup.sh --server
+   ```
+2. Copy your library folder from the PC, e.g. with `rsync -a "RetroRAG Library/" pi@retropi:~/RetroRAG-Library/`.
+   The embeddings are stored inside it.
+3. The Pi only has to embed each question, using the same model the library was indexed with.
+   - To use Ollama on the Pi: `curl -fsSL https://ollama.com/install.sh | sh`, then `ollama pull nomic-embed-text`.
+   - Or point it at your PC's Ollama: `./retrorag-cli.sh -l ~/RetroRAG-Library settings embed_url=http://my-pc:11434`.
+4. Turn on access from the network and set a token:
+
+   ```bash
+   ./retrorag-cli.sh -l ~/RetroRAG-Library settings api_host=0.0.0.0 api_token=choose-a-long-secret
+   ```
+
+   Then start the server:
+
+   ```bash
+   ./retrorag-cli.sh -l ~/RetroRAG-Library api
+   ```
+
+   That serves REST on `:8765` and MCP on `:8766/mcp`.
+5. Point Unsloth Studio, Claude Code, LM Studio and other clients at `http://retropi:8766/mcp` with the header
+   `Authorization: Bearer <token>`.
+
+To start it automatically at boot, save the following as `/etc/systemd/system/retrorag.service`, then run
+`sudo systemctl enable --now retrorag`:
+```ini
+[Unit]
+Description=RetroRAG server
+After=network-online.target
+
+[Service]
+User=pi
+WorkingDirectory=/home/pi/RetroRAG
+ExecStart=/home/pi/RetroRAG/retrorag-cli.sh -l /home/pi/RetroRAG-Library api
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+```
+OCR and indexing on the Pi work, but they're much slower than on a PC. After adding documents on the PC,
+copy the library across again (`rsync`) and restart the service.
 
 ## Licence
 RetroRAG is licensed under the GNU Affero General Public License v3.0 (see `LICENSE`). This matches PyMuPDF,

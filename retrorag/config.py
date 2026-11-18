@@ -1,7 +1,8 @@
 """Application and library settings.
 
 Two layers:
-  * App settings  (%APPDATA%/RetroRAG/app.json)   - machine specific: last library, tesseract path, UI.
+  * App settings  (<config dir>/RetroRAG/app.json) - machine specific: last library, tesseract path, UI.
+                    Windows %APPDATA%, macOS ~/Library/Application Support, Linux ~/.config
   * Library settings (<library>/library.json)      - travel with the library: OCR, chunking, embeddings, API.
 
 The MCP / REST servers only need the library folder; everything they need is in library.json.
@@ -36,7 +37,8 @@ def app_dir() -> Path:
     if is_portable():
         p = app_root() / "settings"
     else:
-        p = Path(os.environ.get("APPDATA") or str(Path.home())) / APP_NAME
+        from .platform_util import config_base
+        p = config_base() / APP_NAME
     p.mkdir(parents=True, exist_ok=True)
     return p
 
@@ -44,7 +46,8 @@ def app_dir() -> Path:
 def default_library_path() -> Path:
     if is_portable():
         return app_root() / "Library"
-    return Path.home() / "Documents" / "RetroRAG Library"
+    from .platform_util import documents_dir
+    return documents_dir() / "RetroRAG Library"
 
 
 def resolve_library_path(stored: str) -> Path:

@@ -398,23 +398,15 @@ class SettingsDialog(QDialog):
 
 # =========================================================================== connect
 def claude_desktop_config_paths() -> list[Path]:
-    out = []
-    appdata = os.environ.get("APPDATA")
-    if appdata:
-        out.append(Path(appdata) / "Claude" / "claude_desktop_config.json")
-    local = os.environ.get("LOCALAPPDATA")
-    if local:
-        pk = Path(local) / "Packages"
-        if pk.exists():
-            for d in pk.glob("Claude_*"):
-                out.append(d / "LocalCache" / "Roaming" / "Claude" / "claude_desktop_config.json")
-    return out
+    from ..platform_util import claude_desktop_config_paths as paths
+    return paths()
 
 
 def mcp_command(lib: Library) -> tuple[str, list[str], dict]:
     """Command line for launching the stdio MCP server on *this* machine."""
     if getattr(sys, "frozen", False):
-        cli = Path(sys.executable).with_name("retrorag-cli.exe")
+        from ..platform_util import exe_name
+        cli = Path(sys.executable).with_name(exe_name("retrorag-cli"))
         return str(cli if cli.exists() else sys.executable), ["mcp", "--library", str(lib.root)], {}
     py = Path(sys.executable)
     if py.name.lower() == "pythonw.exe":

@@ -70,6 +70,20 @@ def is_retro() -> bool:
     return _retro
 
 
+def ui_font() -> QFont:
+    fams = set(QFontDatabase.families())
+    for fam in ("Segoe UI Variable Text", "Segoe UI"):
+        if fam in fams:
+            return QFont(fam, 10)
+    return QFontDatabase.systemFont(QFontDatabase.GeneralFont)   # San Francisco on macOS, Cantarell/Noto on Linux...
+
+
+def mono_family() -> str:
+    if "Consolas" in set(QFontDatabase.families()):
+        return "Consolas"
+    return QFontDatabase.systemFont(QFontDatabase.FixedFont).family()   # Menlo, DejaVu Sans Mono...
+
+
 def load_font_file(path: str | Path) -> str | None:
     """Register a .ttf/.otf with Qt; returns its family name."""
     key = str(path)
@@ -84,7 +98,7 @@ def load_font_file(path: str | Path) -> str | None:
 
 
 def retro_font(px: int = RETRO_PX) -> QFont:
-    f = QFont(_retro_family or "Consolas")
+    f = QFont(_retro_family or mono_family())
     f.setPixelSize(px)
     f.setStyleStrategy(QFont.NoAntialias)
     f.setHintingPreference(QFont.PreferNoHinting)
@@ -96,7 +110,7 @@ def mono_font(point_size: int = 10) -> QFont:
     """Monospace font for text editors/logs in the current theme."""
     if _retro:
         return retro_font(RETRO_PX)
-    f = QFont("Consolas", point_size)
+    f = QFont(mono_family(), point_size)
     f.setStyleHint(QFont.Monospace)
     return f
 
@@ -194,7 +208,7 @@ def icon(name: str, color: str | None = None) -> QIcon:
     if _icon_font is None:
         _icon_font = _find_icon_font() or ""
     if not _icon_font or name not in GLYPHS:
-        return QIcon()
+        return _fallback_icon(name)
     color = color or T["text"]
     key = (name, color, _dark)
     if key in _cache:
@@ -217,6 +231,66 @@ def icon(name: str, color: str | None = None) -> QIcon:
     return ic
 
 
+# freedesktop icon-theme names (Linux) and Qt standard icons (everywhere) for when the Windows font is missing
+FREEDESKTOP = {
+    "add": "list-add", "doc": "text-x-generic", "folder": "folder", "open_folder": "folder-open",
+    "sync": "view-refresh", "refresh": "view-refresh", "play": "media-playback-start", "stop": "media-playback-stop",
+    "settings": "preferences-system", "search": "edit-find", "home": "go-home", "save": "document-save",
+    "edit": "document-edit", "delete": "edit-delete", "prev": "go-previous", "next": "go-next", "zoom_in": "zoom-in",
+    "zoom_out": "zoom-out", "check": "dialog-ok", "flag": "emblem-important", "link": "insert-link",
+    "export": "document-save-as", "system": "computer", "code": "text-x-script", "image": "image-x-generic",
+    "pdf": "application-pdf", "chip": "drive-harddisk", "floppy": "media-floppy", "scan": "scanner",
+    "view": "document-open", "info": "dialog-information", "warning": "dialog-warning", "accept": "dialog-ok-apply",
+    "fit": "zoom-fit-best", "library": "accessories-dictionary", "server": "network-server", "filter": "edit-find",
+    "list": "view-list", "text": "format-text-bold",
+}
+_STANDARD = {
+    "doc": "SP_FileIcon", "folder": "SP_DirIcon", "open_folder": "SP_DirOpenIcon", "sync": "SP_BrowserReload",
+    "refresh": "SP_BrowserReload", "play": "SP_MediaPlay", "stop": "SP_MediaStop", "home": "SP_DirHomeIcon",
+    "save": "SP_DialogSaveButton", "delete": "SP_TrashIcon", "prev": "SP_ArrowLeft", "next": "SP_ArrowRight",
+    "check": "SP_DialogApplyButton", "accept": "SP_DialogApplyButton", "flag": "SP_MessageBoxWarning",
+    "warning": "SP_MessageBoxWarning", "info": "SP_MessageBoxInformation", "system": "SP_ComputerIcon",
+    "floppy": "SP_DriveFDIcon", "chip": "SP_DriveHDIcon", "list": "SP_FileDialogListView", "link": "SP_FileLinkIcon",
+    "view": "SP_DialogOpenButton", "export": "SP_DialogSaveButton", "pdf": "SP_FileIcon", "image": "SP_FileIcon",
+    "code": "SP_FileIcon", "settings": "SP_FileDialogDetailedView", "search": "SP_FileDialogContentsView",
+    "filter": "SP_FileDialogContentsView", "fit": "SP_TitleBarMaxButton", "scan": "SP_DriveCDIcon",
+}
+
+
+def _fallback_icon(name: str) -> QIcon:
+    if name in FREEDESKTOP and QIcon.hasThemeIcon(FREEDESKTOP[name]):
+        return QIcon.fromTheme(FREEDESKTOP[name])
+    app = QApplication.instance()
+    sp = _STANDARD.get(name)
+    if app is not None and sp:
+        from PySide6.QtWidgets import QStyle
+        return app.style().standardIcon(getattr(QStyle.StandardPixmap, sp))
+    return _text_icon(_TEXT_ICONS.get(name, ""))
+
+
+_TEXT_ICONS = {"add": "+", "edit": "✎", "library": "≡", "server": "▤", "text": "T", "zoom_in": "+",
+               "zoom_out": "−"}
+
+
+def _text_icon(ch: str) -> QIcon:
+    """Last resort: draw a character, so icon-only buttons are never blank."""
+    if not ch:
+        return QIcon()
+    ic = QIcon()
+    for size in (16, 20, 24, 32):
+        pm = QPixmap(size, size)
+        pm.fill(Qt.transparent)
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.TextAntialiasing)
+        f = QFont(); f.setPixelSize(int(size * 0.85)); f.setBold(True)
+        p.setFont(f)
+        p.setPen(QColor(T["text"]))
+        p.drawText(QRectF(0, 0, size, size), Qt.AlignCenter, ch)
+        p.end()
+        ic.addPixmap(pm)
+    return ic
+
+
 def app_icon() -> QIcon:
     """Rounded accent tile with a chip glyph."""
     ic = QIcon()
@@ -234,7 +308,7 @@ def app_icon() -> QIcon:
             f = QFont(font); f.setPixelSize(int(size * 0.62)); p.setFont(f)
             p.drawText(QRectF(0, 0, size, size), Qt.AlignCenter, chr(GLYPHS["chip"]))
         else:
-            f = QFont("Segoe UI", 1, QFont.Bold); f.setPixelSize(int(size * 0.6)); p.setFont(f)
+            f = QFont(ui_font().family(), 1, QFont.Bold); f.setPixelSize(int(size * 0.6)); p.setFont(f)
             p.drawText(QRectF(0, 0, size, size), Qt.AlignCenter, "R")
         p.end()
         ic.addPixmap(pm)
@@ -377,7 +451,7 @@ QSplitter::handle:vertical {{ height: 6px; }}
 QSplitter::handle:hover {{ background: {t['accent_soft']}; }}
 
 QGraphicsView {{ background: {t['scrim']}; border: 1px solid {t['border']}; border-radius: 8px; }}
-QPlainTextEdit#log {{ background: {t['surface2']}; border: none; color: {t['muted']}; font-family: Consolas; }}
+QPlainTextEdit#log {{ background: {t['surface2']}; border: none; color: {t['muted']}; font-family: '{t['mono']}'; }}
 QToolTip {{ background: {t['surface']}; color: {t['text']}; border: 1px solid {t['border']}; padding: 5px 8px; border-radius: 6px; }}
 QMessageBox QLabel {{ min-width: 280px; }}
 """
@@ -387,7 +461,6 @@ def _retro_qss(qss: str) -> str:
     """Square corners, no bold (pixel fonts have one weight), pixel-font monospace, phosphor glow on focus."""
     qss = re.sub(r"border-(?:top-|bottom-)?(?:left-|right-)?radius: \d+px", "border-radius: 0px", qss)
     qss = qss.replace("font-weight: 600", "font-weight: 400")
-    qss = qss.replace("font-family: Consolas", f"font-family: '{T['mono']}'")
     qss = qss.replace("QLabel#heading {{ font-size: 16pt;".replace("{{", "{"), f"QLabel#heading {{ font-size: {T['heading']};")
     t = T
     return qss + f"""
@@ -441,10 +514,11 @@ def apply_theme(app: QApplication, mode: str = "system", phosphor: str = "green"
             _retro_family = load_font_file(RETRO_FONT_FILE)
         T.update(PHOSPHORS.get(phosphor, PHOSPHORS["green"]))
         T.update(_TYPE)
-        T.update(mono=_retro_family or "Consolas", bold="400", heading=f"{RETRO_PX * 3 // 2}px",
+        T.update(mono=_retro_family or mono_family(), bold="400", heading=f"{RETRO_PX * 3 // 2}px",
                  h1=f"{RETRO_PX * 2}px", h2=f"{RETRO_PX * 3 // 2}px", big=f"{RETRO_PX * 2}px")
     else:
         T.update(DARK if dark else LIGHT)
+        T["mono"] = mono_family()
     try:   # dark title bars / native dialogs follow along (Qt 6.8+)
         app.styleHints().setColorScheme(Qt.ColorScheme.Unknown if mode == "system" else
                                         (Qt.ColorScheme.Dark if dark else Qt.ColorScheme.Light))
@@ -455,8 +529,7 @@ def apply_theme(app: QApplication, mode: str = "system", phosphor: str = "green"
     if _retro:
         app.setFont(retro_font())
     else:
-        app.setFont(QFont("Segoe UI Variable Text" if "Segoe UI Variable Text" in QFontDatabase.families()
-                          else "Segoe UI", 10))
+        app.setFont(ui_font())
     qss = stylesheet()
     app.setStyleSheet(_retro_qss(qss) if _retro else qss)
     _cache.clear()

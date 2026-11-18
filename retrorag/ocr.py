@@ -23,21 +23,17 @@ class OCRError(RuntimeError):
     pass
 
 
-INSTALL_HINT = ("Tesseract OCR is not installed or not found.\n"
-                "Install it with:  winget install UB-Mannheim.TesseractOCR\n"
-                "(or from https://github.com/UB-Mannheim/tesseract/wiki), then set its path in Settings if needed.")
+from .platform_util import tesseract_candidates, tesseract_install_hint
+
+INSTALL_HINT = tesseract_install_hint()
 
 
 def find_tesseract(override: str = "") -> str | None:
     from .config import app_root
     cands = [override] if override else []
     # a Tesseract-OCR folder shipped next to the app (portable builds) wins over a system install
-    cands.append(str(app_root() / "Tesseract-OCR" / "tesseract.exe"))
-    cands.append(shutil.which("tesseract") or "")
-    for base in (os.environ.get("ProgramFiles", r"C:\Program Files"), os.environ.get("ProgramFiles(x86)", ""),
-                 os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs")):
-        if base:
-            cands.append(os.path.join(base, "Tesseract-OCR", "tesseract.exe"))
+    cands.append(str(app_root() / "Tesseract-OCR" / ("tesseract.exe" if os.name == "nt" else "tesseract")))
+    cands += tesseract_candidates()
     for c in cands:
         if c and Path(c).is_file():
             return str(Path(c))

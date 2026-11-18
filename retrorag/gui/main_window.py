@@ -2,8 +2,6 @@
 from __future__ import annotations
 
 import html
-import os
-import subprocess
 from pathlib import Path
 
 from PySide6.QtCore import QByteArray, QSize, Qt, QTimer
@@ -14,6 +12,7 @@ from PySide6.QtWidgets import (QComboBox, QDockWidget, QFileDialog, QHBoxLayout,
                                QVBoxLayout, QWidget)
 
 from .. import ingest
+from ..platform_util import open_path, reveal, tesseract_install_command
 from ..config import APP_NAME, APP_VERSION, CATEGORIES, AppSettings, is_portable, resolve_library_path, store_library_path
 from ..library import Document, Library
 from . import theme
@@ -210,7 +209,8 @@ class MainWindow(QMainWindow):
         m.addAction("Open library folder…", self.open_library)
         m.addAction("Import system folder…", self.import_system_folder_dialog)
         m.addAction("Copy linked files into library (make portable)", self.consolidate)
-        m.addAction("Show library in Explorer", lambda: os.startfile(self.lib.root))
+        from ..platform_util import file_manager_name
+        m.addAction(f"Show library in {file_manager_name()}", lambda: open_path(self.lib.root))
         m.addSeparator(); m.addAction(self.a_settings)
         m.addSeparator(); m.addAction("Exit", self.close)
         m = mb.addMenu("&System")
@@ -349,7 +349,7 @@ class MainWindow(QMainWindow):
         bad = lambda msg: f"<span style='color:{t['warn']}'>●</span>&nbsp; {msg}"
         tess = (ok(f"Tesseract {tinfo['version']} &nbsp;<span style='color:{t['muted']}'>"
                    f"({', '.join(tinfo['languages'][:8])})</span>") if tinfo["ok"] else
-                bad("Tesseract not found - install with <code>winget install UB-Mannheim.TesseractOCR</code>, then restart"))
+                bad(f"Tesseract not found - install with <code>{tesseract_install_command()}</code>, then restart"))
         es = self.lib.settings
         emb_txt = f"{es.embed_provider} / {es.embed_model}" if es.embed_provider != "none" else "off - keyword search only"
         emb = (ok if es.embed_provider != "none" else bad)(
@@ -640,7 +640,7 @@ read a drawing.</p>
             m.addSeparator()
             m.addAction("OCR everything that needs it", lambda: self.ocr_docs(
                 [d.id for d in self.lib.documents(key[1], where="needs_ocr=1")]))
-            m.addAction("Show folder", lambda: os.startfile(self.lib.system_dir(self.lib.system(key[1]))))
+            m.addAction("Show folder", lambda: open_path(self.lib.system_dir(self.lib.system(key[1]))))
             m.addSeparator()
             m.addAction("Remove system…", self.remove_system)
         else:
@@ -953,9 +953,9 @@ read a drawing.</p>
         elif action == "index":
             self.build_index(False, [doc_id])
         elif action == "open_original":
-            os.startfile(self.lib.abspath(d.path))
+            open_path(self.lib.abspath(d.path))
         elif action == "show_folder":
-            subprocess.Popen(["explorer", "/select,", str(self.lib.abspath(d.path))])
+            reveal(self.lib.abspath(d.path))
         elif action == "remove":
             self.remove_docs([doc_id])
 
@@ -1098,7 +1098,7 @@ read a drawing.</p>
         if d:
             from ..export import export_markdown
             self.jobs.submit("Export markdown", lambda ctx: export_markdown(self.lib, Path(d), log=ctx.log),
-                             on_done=lambda n: os.startfile(d))
+                             on_done=lambda n: open_path(d))
 
     def export_jsonl(self, emb: bool):
         f, _ = QFileDialog.getSaveFileName(self, "Export chunks", "retrorag_chunks.jsonl", "JSON Lines (*.jsonl)")
