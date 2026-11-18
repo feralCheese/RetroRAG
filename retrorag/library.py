@@ -440,9 +440,11 @@ class Library:
 
     # ------------------------------------------------------------------ moving documents
     def move_documents(self, doc_ids: list[int], system_id: int, category: str | None = None,
-                       log=print) -> int:
+                       log=print, group_path: str | None = None) -> int:
         """Move documents to another system (and/or category). Files move on disk together with their OCR text,
-        corrections and word boxes; links to other documents are kept (they refer to document ids)."""
+        corrections and word boxes; links to other documents are kept (they refer to document ids).
+        group_path: None keeps each document's folder, "" puts it at the top level of the category,
+        "a/b" puts it in that folder."""
         import shutil
         from .ingest import _unique_dest
         target = self.system(system_id)
@@ -454,16 +456,17 @@ class Library:
             if not d:
                 continue
             cat = category or d.category
-            if d.system_id == system_id and cat == d.category:
+            group = d.group_path if group_path is None else group_path.strip("/")
+            if d.system_id == system_id and cat == d.category and group == d.group_path:
                 continue
             old_md, old_js = self.derived_md_path(d), self.ocr_json_path(d)
-            upd = {"system_id": system_id, "category": cat, "text_updated": now_iso()}
+            upd = {"system_id": system_id, "category": cat, "group_path": group, "text_updated": now_iso()}
             if Path(d.path).is_absolute():              # linked in place: the original stays where it is
-                new_dir = self.system_dir(target) / "_derived" / slugify(cat) / d.group_path
+                new_dir = self.system_dir(target) / "_derived" / slugify(cat) / group
                 new_name = Path(d.path).name
             else:
                 src = self.abspath(d.path)
-                new_dir = self.system_dir(target) / slugify(cat) / d.group_path
+                new_dir = self.system_dir(target) / slugify(cat) / group
                 new_dir.mkdir(parents=True, exist_ok=True)
                 dest = _unique_dest(new_dir / src.name)
                 if src.exists():
@@ -518,6 +521,8 @@ class Library:
                 for p in {self.abspath(d.text_path)}:
                     if p != orig and p.is_file() and self.root in p.parents:
                         p.unlink(missing_ok=True)
+            if not Path(d.path).is_absolute():
+                self._prune_empty_dirs(self.abspath(d.path).parent)   # e.g. a folder an unzip created
 
     def read_text(self, d: Document) -> str:
         if not d.text_path:

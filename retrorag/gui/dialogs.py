@@ -160,13 +160,15 @@ class MoveDialog(QDialog):
         for c in CATEGORIES:
             self.category.addItem(c, c)
         f.addRow("Category", self.category)
+        self.top = QCheckBox("Take them out of sub-folders (top level of the category)")
+        f.addRow("", self.top)
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         bb.button(QDialogButtonBox.Ok).setText("Move")
         bb.accepted.connect(self.accept); bb.rejected.connect(self.reject)
         f.addRow(bb)
 
-    def values(self) -> tuple[int, str | None]:
-        return self.system.currentData(), self.category.currentData()
+    def values(self) -> tuple[int, str | None, str | None]:
+        return self.system.currentData(), self.category.currentData(), ("" if self.top.isChecked() else None)
 
 
 # =========================================================================== add files

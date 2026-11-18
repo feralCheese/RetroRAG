@@ -323,6 +323,7 @@ def _assets() -> dict[str, str]:
     m, a, oa = T["muted"], T["accent"], T["on_accent"]
     svgs = {
         "down": f'<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 10 10"><path d="M1.5 3.5 5 7l3.5-3.5" fill="none" stroke="{m}" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+        "right": f'<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 10 10"><path d="M3.5 1.5 7 5l-3.5 3.5" fill="none" stroke="{m}" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>',
         "up": f'<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 10 10"><path d="M1.5 6.5 5 3l3.5 3.5" fill="none" stroke="{m}" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>',
         "check": f'<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 12 12"><path d="M2.5 6.2 5 8.6l4.6-5" fill="none" stroke="{oa}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
         "dot": f'<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 12 12"><circle cx="6" cy="6" r="2.6" fill="{oa}"/></svg>',
@@ -421,6 +422,13 @@ QTreeView::item:hover {{ background: {t['surface2']}; }}
 QTreeView::item:selected {{ background: {t['accent_soft']}; color: {t['text']}; }}
 QTreeView::branch:selected {{ background: {t['accent_soft']}; }}
 QTreeView::branch:hover {{ background: {t['surface2']}; }}
+/* giving ::branch a background stops Qt drawing its own arrows, so draw them for every state */
+QTreeView::branch:has-children:!has-siblings:closed, QTreeView::branch:closed:has-children:has-siblings {{
+    image: url({a['right']}); border-image: none; }}
+QTreeView::branch:open:has-children:!has-siblings, QTreeView::branch:open:has-children:has-siblings {{
+    image: url({a['down']}); border-image: none; }}
+QToolButton#clearFilter {{ color: {t['accent']}; font-weight: {t['bold']}; padding: 2px 6px; }}
+QComboBox#filterActive {{ border: 1px solid {t['accent']}; color: {t['accent']}; }}
 QHeaderView::section {{ background: {t['surface']}; border: none; border-bottom: 1px solid {t['border']}; padding: 5px 8px; color: {t['muted']}; }}
 
 QGroupBox {{ background: {t['surface']}; border: 1px solid {t['border']}; border-radius: 10px; margin-top: 22px; padding: 14px 12px 12px 12px; }}

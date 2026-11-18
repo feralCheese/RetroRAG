@@ -115,7 +115,12 @@ class MainWindow(QMainWindow):
         self.filter_action = self.filter.addAction(theme.icon("filter"), QLineEdit.LeadingPosition)
         self.filter_kind = QComboBox()
         self.filter_kind.addItems(["All", "Needs OCR", "Flagged words", "Not proofread", "Out of date"])
-        fh.addWidget(self.filter, 1); fh.addWidget(self.filter_kind)
+        self.clear_filter_btn = QToolButton(text="\u2715")
+        self.clear_filter_btn.setObjectName("clearFilter")
+        self.clear_filter_btn.setToolTip("Clear the filter - show every document")
+        self.clear_filter_btn.clicked.connect(self.clear_filter)
+        self.clear_filter_btn.hide()
+        fh.addWidget(self.filter, 1); fh.addWidget(self.filter_kind); fh.addWidget(self.clear_filter_btn)
         lv.addLayout(fh)
         self.tree = LibraryTree(self)
         lv.addWidget(self.tree, 1)
@@ -492,7 +497,33 @@ read a drawing.</p>
                                      15000)
         return doc_id
 
+    def clear_filter(self):
+        self.filter.blockSignals(True); self.filter.clear(); self.filter.blockSignals(False)
+        self.filter_kind.setCurrentIndex(0)      # triggers refresh_tree
+        self.refresh_tree()
+
+    def _update_filter_ui(self):
+        on = bool(self.filter.text().strip()) or self.filter_kind.currentText() != "All"
+        self.clear_filter_btn.setVisible(on)
+        name = "filterActive" if self.filter_kind.currentText() != "All" else ""
+        if self.filter_kind.objectName() != name:
+            self.filter_kind.setObjectName(name)
+            self.filter_kind.style().unpolish(self.filter_kind); self.filter_kind.style().polish(self.filter_kind)
+
+    def select_system(self, system_id: int):
+        """Show a system in the tree: open its families, select it, scroll to it."""
+        for it in self._iter_items():
+            if it.data(0, ROLE) == ("system", system_id):
+                p = it.parent()
+                while p is not None:
+                    p.setExpanded(True)
+                    p = p.parent()
+                self.tree.setCurrentItem(it)
+                self.tree.scrollToItem(it)
+                return
+
     def refresh_tree(self):
+        self._update_filter_ui()
         expanded = self._expanded_keys()
         sel = self._selected_key()
         self.tree.clear()
@@ -539,13 +570,9 @@ read a drawing.</p>
                     ci.addChild(QTreeWidgetItem(["…"]))   # lazy placeholder
             for ch in kids.get(s.id, []):
                 build(ch, si)
-            if filtering and si.childCount() == 0:
-                if parent_item:
-                    parent_item.removeChild(si)
-                else:
-                    self.tree.takeTopLevelItem(self.tree.indexOfTopLevelItem(si))
-                return False
-            if filtering or ("system", s.id) in expanded:
+            # systems always stay visible (a new, empty system mustn't vanish under a filter); with a filter on,
+            # open the ones that have matching documents
+            if (filtering and si.childCount()) or ("system", s.id) in expanded:
                 si.setExpanded(True)
             return True
 
@@ -742,6 +769,7 @@ read a drawing.</p>
         s = self.lib.add_system(**v)
         self.log(f"Added system {s.name}")
         self.refresh_all()
+        self.select_system(s.id)
         # files kept from an earlier removal (or copied from another PC)?
         sdir = self.lib.system_dir(s)
         if any(p.is_file() and p.name != ingest.MANIFEST for p in sdir.rglob("*")):
@@ -762,6 +790,7 @@ read a drawing.</p>
             except ValueError as e:
                 QMessageBox.warning(self, "Edit system", str(e))
             self.refresh_all()
+            self.select_system(s.id)
             self.schedule_index()
 
     def remove_system(self):
@@ -821,8 +850,8 @@ read a drawing.</p>
         cur = self.current_system()
         dlg = MoveDialog(self, self.lib, len(ids), cur.id if cur else None)
         if dlg.exec():
-            sid, cat = dlg.values()
-            self.move_docs(ids, sid, cat)
+            sid, cat, group = dlg.values()
+            self.move_docs(ids, sid, cat, group)
 
     def drop_move(self, target):
         """Documents dragged onto a system / category in the tree (or a system onto another system)."""
@@ -841,28 +870,38 @@ read a drawing.</p>
                 self.refresh_all()
                 self.schedule_index()
             return
+        # where it lands: a category = its top level, a folder = that folder, a document = beside it,
+        # a system = same category and folder as now
         if key[0] == "doc":
             d = self.lib.document(key[1])
-            sid, cat = d.system_id, d.category
+            sid, cat, group = d.system_id, d.category, d.group_path
+        elif key[0] == "folder":
+            sid, cat, group = key[1], key[2], key[3]
+        elif key[0] == "category":
+            sid, cat, group = key[1], key[2], ""
         else:
-            sid, cat = key[1], (key[2] if key[0] in ("category", "folder") else None)
-        ids = [i for i in self.selected_doc_ids()
-               if (d := self.lib.document(i)) and (d.system_id != sid or (cat and d.category != cat))]
+            sid, cat, group = key[1], None, None
+
+        def changes(d) -> bool:
+            return (d.system_id != sid or (cat is not None and d.category != cat)
+                    or (group is not None and d.group_path != group))
+        ids = [i for i in self.selected_doc_ids() if (d := self.lib.document(i)) and changes(d)]
         if not ids:
             return
-        target_name = self.lib.system(sid).name + (f" / {cat}" if cat else "")
+        where = " (top level)" if group == "" else (f" / {group.split('/')[-1]}" if group else "")
+        target_name = self.lib.system(sid).name + (f" / {cat}" if cat else "") + where
         if QMessageBox.question(self, "Move documents", f"Move {len(ids)} document(s) to {target_name}?\n\n"
                                 "Files move on disk too, with their OCR text, corrections and links.") == QMessageBox.Yes:
-            self.move_docs(ids, sid, cat)
+            self.move_docs(ids, sid, cat, group)
 
-    def move_docs(self, ids: list[int], system_id: int, category: str | None):
+    def move_docs(self, ids: list[int], system_id: int, category: str | None, group_path: str | None = None):
         for i in ids:
             if not self._close_editor(i):
                 return
         sname = self.lib.system(system_id).name
 
         def job(ctx):
-            return self.lib.move_documents(ids, system_id, category, log=ctx.log)
+            return self.lib.move_documents(ids, system_id, category, log=ctx.log, group_path=group_path)
 
         def done(n):
             self.refresh_all()
