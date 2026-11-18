@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QMenu, QToolButton, QGraphi
 
 from ..library import Document, Library, now_iso
 from . import theme
+from ..align import align, page_tokens, token_at
 from ..ocr import is_graphic_word, load_ocr_json, reference_height, render_page
 from ..textutil import COMMENT_LINE_RE, MARKER_RE, PAGE_RE, count_markers, strip_markers
 
@@ -48,9 +49,6 @@ def box_colors(kind: str) -> tuple:
             "word": (QColor(255, 140, 0), QColor(255, 160, 0, 70))}[kind]
 
 
-REMOVED_LINE = "<!-- removed: OCR noise -->"
-
-
 def is_noise_line(line: str, threshold: int = 70) -> bool:
     """True for lines that are mostly OCR junk (specks and fragments of diagrams), not real-but-misread words:
     most tokens are tiny or punctuation-heavy AND the line's average confidence is low."""
@@ -72,11 +70,6 @@ def is_noise_line(line: str, threshold: int = 70) -> bool:
     junk_share = sum(junk(w) for w, _ in tokens) / len(tokens)
     mean_conf = sum(c for _, c in tokens) / len(tokens)
     return junk_share >= 0.7 and mean_conf < max(50, threshold - 10)
-
-
-def counts_as_ocr_line(t: str) -> bool:
-    """Lines that correspond 1:1 to OCR lines on the scan (removed-noise placeholders still count)."""
-    return bool(t.strip()) and (not COMMENT_LINE_RE.match(t) or t.strip() == REMOVED_LINE)
 
 
 class MarkerHighlighter(QSyntaxHighlighter):
@@ -301,6 +294,8 @@ class ProofEditor(QWidget):
         self.threshold = int(self.ocr.get("threshold", lib.settings.low_conf_threshold))
         self.cur_page = None
         self._last_loc = None
+        self._align_cache: dict = {}      # page -> (page text, aligned tokens)
+        self._flags_key = None            # which alignment the red flag boxes were drawn for
         self._flash_item = None
         self._flash_left = 0
         self._static_overlay: list = []
@@ -540,29 +535,24 @@ class ProofEditor(QWidget):
 
     # ------------------------------------------------------------------ OCR noise
     def delete_garbage_lines(self):
-        """Replace lines that are mostly low-confidence noise (diagrams, schematics) on the current page with a
-        placeholder comment: not indexed, but keeps the remaining lines aligned with the scan."""
+        """Delete lines on the current page that are mostly OCR noise (diagrams, schematics). The text stays in
+        step with the scan because words are matched to the OCR boxes by content."""
         lo, hi = self._page_range()
         seg = self.text.toPlainText()[lo:hi]
         out, n = [], 0
         for line in seg.split("\n"):
-            if not counts_as_ocr_line(line) or line.strip() == REMOVED_LINE or PAGE_RE.match(line):
-                out.append(line)
-                continue
-            if is_noise_line(line, self.threshold):
-                out.append(REMOVED_LINE)
+            if line.strip() and not PAGE_RE.match(line) and not COMMENT_LINE_RE.match(line) \
+                    and is_noise_line(line, self.threshold):
                 n += 1
-            else:
-                out.append(line)
+                continue
+            out.append(line)
         if not n:
             QMessageBox.information(self, "Garbage lines", "No lines on this page look like OCR noise.")
             return
         if QMessageBox.question(self, "Garbage lines",
-                                f"Remove {n} line(s) on this page that are mostly OCR noise (typically text OCR "
-                                "'found' in diagrams and schematics)?\n\nThey become a hidden placeholder so the "
-                                "rest still lines up with the scan. Ctrl+Z undoes it.") == QMessageBox.Yes:
+                                f"Delete {n} line(s) on this page that are mostly OCR noise (typically text OCR "
+                                "'found' in diagrams and schematics)?\n\nCtrl+Z undoes it.") == QMessageBox.Yes:
             self._replace_range(lo, hi, "\n".join(out))
-
     def _on_changed(self):
         if not getattr(self, "_loading", False):
             self._count_timer.start()
@@ -667,48 +657,37 @@ class ProofEditor(QWidget):
         return reference_height([w for l in pj.get("lines", []) for w in l["words"]], self.threshold)
 
     def remove_drawing_noise(self):
-        """Remove flagged words on this page whose box is drawing-sized (uses the stored OCR word boxes)."""
+        """Delete flagged words on this page whose OCR box is drawing-sized (chip outlines, wires, boxes)."""
         page = self.cur_page
         pj = self.ocr.get("pages", {}).get(str(page))
         if not pj:
             QMessageBox.information(self, "Drawing shapes", "This page has no OCR word positions.")
             return
         ref = self._page_ref(pj)
-        lo, hi = self._page_range()
-        seg = self.text.toPlainText()[lo:hi]
-        out, n, li = [], 0, -1
-        for line in seg.split("\n"):
-            if PAGE_RE.match(line) or not counts_as_ocr_line(line):
-                out.append(line)
-                continue
-            li += 1
-            if li >= len(pj["lines"]) or line.strip() == REMOVED_LINE:
-                out.append(line)
-                continue
-            words, toks = pj["lines"][li]["words"], line.split(" ")
-            if len([t for t in toks if t]) != len(words):     # line was edited: can't match words safely
-                out.append(line)
-                continue
-            keep, wi = [], 0
-            for t in toks:
-                if not t:
-                    keep.append(t)
-                    continue
-                w = words[wi]; wi += 1
-                if MARKER_RE.fullmatch(t) and is_graphic_word(w, ref, pj.get("height", 0), self.threshold):
-                    n += 1
-                    continue
-                keep.append(t)
-            new = " ".join(x for x in keep if x)
-            out.append(new if new.strip() else REMOVED_LINE)
-        if not n:
+        lo, hi = self._page_bounds(page)
+        toks = self._alignment(page)
+        doomed = [t for t in toks if t.marker and t.ref is not None and
+                  is_graphic_word(pj["lines"][t.ref[0]]["words"][t.ref[1]], ref, pj.get("height", 0), self.threshold)]
+        if not doomed:
             QMessageBox.information(self, "Drawing shapes", "No drawing-sized 'words' found on this page.")
             return
         if QMessageBox.question(self, "Drawing shapes",
-                                f"Remove {n} flagged 'word(s)' on this page whose box is far too big for text - "
-                                "parts of the drawing that OCR mistook for words?\n\nCtrl+Z undoes it.") == QMessageBox.Yes:
-            self._replace_range(lo, hi, "\n".join(out))
-
+                                f"Delete {len(doomed)} flagged 'word(s)' on this page whose box is far too big for "
+                                "text - parts of the drawing that OCR mistook for words?\n\nCtrl+Z undoes it.") \
+                != QMessageBox.Yes:
+            return
+        text = self.text.toPlainText()
+        seg = text[lo:hi]
+        for t in sorted(doomed, key=lambda t: -t.start):          # cut from the end so offsets stay valid
+            a, b = t.start - lo, t.end - lo
+            if b < len(seg) and seg[b] == " ":
+                b += 1
+            elif a > 0 and seg[a - 1] == " ":
+                a -= 1
+            seg = seg[:a] + seg[b:]
+        seg = re.sub(r"\n[ \t]+\n", "\n\n", seg)
+        seg = re.sub(r"\n{3,}", "\n\n", seg)
+        self._replace_range(lo, hi, seg)
     def accept_page(self):
         lo, hi = self._page_range()
         seg = self.text.toPlainText()[lo:hi]
@@ -768,6 +747,7 @@ class ProofEditor(QWidget):
         self.a_save.setEnabled(self.editable)
         self.load_text()
         self._img_cache.clear()
+        self._align_cache.clear()
         self.cur_page = None
         if page:
             self.goto_page(page)
@@ -784,6 +764,53 @@ class ProofEditor(QWidget):
                 break
         self._show_page(n)
 
+    def _page_bounds(self, n: int) -> tuple[int, int]:
+        """Text range of page n (from its page marker to the next one)."""
+        text = self.text.toPlainText()
+        ms = list(PAGE_RE.finditer(text))
+        for k, m in enumerate(ms):
+            if int(m.group(1)) == n:
+                return m.start(), (ms[k + 1].start() if k + 1 < len(ms) else len(text))
+        return 0, 0
+
+    def _alignment(self, n: int):
+        """Words of page n matched to the OCR boxes by content (recomputed only when that page's text changed)."""
+        pj = self.ocr.get("pages", {}).get(str(n))
+        if not pj:
+            return []
+        lo, hi = self._page_bounds(n)
+        text = self.text.toPlainText()
+        seg = text[lo:hi]
+        hit = self._align_cache.get(n)
+        if hit and hit[0] == seg and hit[2] == lo:
+            return hit[1]
+        toks = align(page_tokens(text, lo, hi), pj)
+        self._align_cache[n] = (seg, toks, lo)
+        return toks
+
+    def _draw_flag_boxes(self, n: int):
+        """Red boxes for words that are *still* flagged; fixed, accepted or deleted words lose theirs."""
+        for it in self._static_overlay:
+            try:
+                self.view.scene().removeItem(it)
+            except RuntimeError:
+                pass
+        self.view.overlay = [i for i in self.view.overlay if i not in self._static_overlay]
+        self._static_overlay = []
+        pj = self.ocr.get("pages", {}).get(str(n))
+        if not pj:
+            return
+        ref = self._page_ref(pj)
+        before = len(self.view.overlay)
+        for t in self._alignment(n):
+            if t.marker and t.ref is not None:
+                w = pj["lines"][t.ref[0]]["words"][t.ref[1]]
+                pen_col, fill = box_colors("flag")
+                big = is_graphic_word(w, ref, pj.get("height", 0), self.threshold)
+                self.view.add_box(w["b"], pen_col, None if big else fill, 1)
+        self._static_overlay = self.view.overlay[before:]
+        self._flags_key = (n, self._align_cache.get(n, ("",))[0])
+
     def _show_page(self, n: int):
         if not self.has_pages or n == self.cur_page:
             return
@@ -798,17 +825,8 @@ class ProofEditor(QWidget):
         self._stop_flash()
         self._last_loc = None
         self.view.set_image(self._img_cache[n], pj.get("width") if pj else None)
-        if pj:
-            ref = self._page_ref(pj)
-            for line in pj.get("lines", []):
-                for w in line["words"]:
-                    if w["c"] < self.threshold:
-                        pen_col, fill = box_colors("flag")
-                        big = is_graphic_word(w, ref, pj.get("height", 0), self.threshold)
-                        self.view.add_box(w["b"], pen_col, None if big else fill, 1)
-            self._static_overlay = list(self.view.overlay)
-        else:
-            self._static_overlay = []
+        self._static_overlay = []              # set_image cleared the scene
+        self._draw_flag_boxes(n)
         if hasattr(self, "page_spin"):
             self.page_spin.blockSignals(True)
             self.page_spin.setValue(n)
@@ -818,28 +836,31 @@ class ProofEditor(QWidget):
         self._sync_timer.start()
 
     def _cursor_location(self):
-        """-> (page, ocr line index within page, word index within line)"""
+        """-> (page, OCR line index, OCR word index) for the cursor, via the content alignment.
+        Word index is -1 on text the user typed in (no box on the scan)."""
         c = self.text.textCursor()
         block = c.block()
-        page, idx = None, -1
-        b = block
+        b, page = block, None
         while b.isValid():
-            t = b.text()
-            m = PAGE_RE.match(t)
+            m = PAGE_RE.match(b.text())
             if m:
                 page = int(m.group(1))
                 break
-            if counts_as_ocr_line(t):
-                idx += 1
             b = b.previous()
         if page is None:
             return None, -1, -1
         if not block.text().strip() or PAGE_RE.match(block.text()):
             return page, -1, -1
-        before = block.text()[: c.position() - block.position()]
-        word = len(before.split()) - (0 if before.endswith((" ", "\t")) or not before else 1)
-        return page, idx, max(0, word)
-
+        toks = self._alignment(page)
+        tok = token_at(toks, c.position(), block.position(), block.position() + len(block.text()))
+        if tok is None:
+            return page, -1, -1
+        if tok.ref is not None:
+            return page, tok.ref[0], tok.ref[1]
+        # typed-in word: show the line of the nearest matched word on the same text line
+        lo, hi = block.position(), block.position() + len(block.text())
+        near = [t for t in toks if t.ref is not None and t.start >= lo and t.end <= hi]
+        return (page, near[0].ref[0], -1) if near else (page, -1, -1)
     def _sync(self):
         if not self.has_pages:
             return
@@ -847,6 +868,9 @@ class ProofEditor(QWidget):
         if page is None:
             return
         self._show_page(page)
+        self._alignment(page)                  # refreshes the cache if this page's text changed
+        if self._flags_key != (page, self._align_cache.get(page, ("",))[0]):
+            self._draw_flag_boxes(page)        # text changed: drop boxes of words fixed / deleted since
         # dynamic overlay: spotlight + current line + current word
         for it in [i for i in self.view.overlay if i not in self._static_overlay]:
             self.view.scene().removeItem(it)
@@ -980,36 +1004,29 @@ class ProofEditor(QWidget):
         self.loupe.setPixmap(pm)
 
     def _on_image_click(self, x: float, y: float):
-        pj = self.ocr.get("pages", {}).get(str(self.cur_page))
+        """Click on the scan: put the cursor on that word in the text (found via the content alignment)."""
+        page = self.cur_page
+        pj = self.ocr.get("pages", {}).get(str(page))
         if not pj:
             return
         target = None
-        for i, line in enumerate(pj.get("lines", [])):
-            b = line["b"]
-            if b[0] - 4 <= x <= b[2] + 4 and b[1] - 4 <= y <= b[3] + 4:
-                target = i
-                break
+        for li, line in enumerate(pj.get("lines", [])):
+            lb = line["b"]
+            if not (lb[0] - 4 <= x <= lb[2] + 4 and lb[1] - 4 <= y <= lb[3] + 4):
+                continue
+            wi = next((k for k, w in enumerate(line["words"]) if w["b"][0] - 3 <= x <= w["b"][2] + 3), 0)
+            target = (li, wi)
+            break
         if target is None:
             return
-        # find that line in the text
-        text_doc = self.text.document()
-        text = self.text.toPlainText()
-        m = next((m for m in PAGE_RE.finditer(text) if int(m.group(1)) == self.cur_page), None)
-        if not m:
+        toks = self._alignment(page)
+        tok = next((t for t in toks if t.ref == target), None)
+        if tok is None:   # that word was deleted: nearest surviving word of the same line
+            same = [t for t in toks if t.ref and t.ref[0] == target[0]]
+            tok = min(same, key=lambda t: abs(t.ref[1] - target[1])) if same else None
+        if tok is None:
             return
-        b = text_doc.findBlock(m.start()).next()
-        idx = -1
-        while b.isValid() and not PAGE_RE.match(b.text()):
-            if counts_as_ocr_line(b.text()):
-                idx += 1
-                if idx == target:
-                    words = pj["lines"][target]["words"]
-                    wi = next((k for k, w in enumerate(words) if w["b"][0] - 3 <= x <= w["b"][2] + 3), 0)
-                    parts = re.finditer(r"\S+", b.text())
-                    starts = [p.start() for p in parts]
-                    c = self.text.textCursor()
-                    c.setPosition(b.position() + (starts[wi] if wi < len(starts) else 0))
-                    self.text.setTextCursor(c)
-                    self.text.setFocus()
-                    return
-            b = b.next()
+        c = self.text.textCursor()
+        c.setPosition(tok.inner_start)
+        self.text.setTextCursor(c)
+        self.text.setFocus()
