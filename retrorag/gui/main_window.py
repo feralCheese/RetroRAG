@@ -258,6 +258,12 @@ class MainWindow(QMainWindow):
         self.server_label = QLabel("Servers: stopped")
         self.stats_label = QLabel()
         self.statusBar().addPermanentWidget(self.stats_label)
+        from .widgets import Spinner
+        self.status_spinner = Spinner(16)
+        self.status_busy = QLabel()
+        self.status_busy.hide()
+        self.statusBar().insertPermanentWidget(0, self.status_spinner)
+        self.statusBar().insertPermanentWidget(1, self.status_busy)
         self.statusBar().addPermanentWidget(self.server_label)
         self.apply_icons()
 
@@ -296,6 +302,9 @@ class MainWindow(QMainWindow):
 
     def _wire_jobs(self):
         self.jobs.log.connect(self.log)
+        self.jobs.job_started.connect(self._on_job_busy)
+        self.jobs.job_ended.connect(self._on_job_idle)
+        self.doc_panel.cancel_job.connect(self.jobs.cancel)
         self.jobs.started.connect(self._on_job_started)
         self.jobs.progress.connect(self._on_progress)
         self.jobs.finished.connect(self._on_job_finished)
@@ -312,6 +321,34 @@ class MainWindow(QMainWindow):
             self.progress.setRange(0, n); self.progress.setValue(i)
         name = getattr(self, "_job_name", "")
         self.job_label.setText(f"{name}  ·  {i}/{n}  {msg[:70]}" if n else f"{name}  {msg[:70]}")
+        job = self.jobs.current
+        if job is not None:
+            text = f"{job.verb} - {msg}" + (f"  ({i}/{n})" if n else "") if msg and msg != "done" else f"{job.verb}…"
+            self._show_busy(job, text)
+
+    # ------------------------------------------------------------------ busy feedback
+    def _show_busy(self, job, text: str):
+        self.status_spinner.start()
+        self.status_busy.setText(text[:90])
+        self.status_busy.show()
+        self.doc_panel.set_busy(set(job.doc_ids), text)
+        for did, ed in self.editors.items():
+            ed.set_busy(text if did in job.doc_ids else None)
+
+    def _on_job_busy(self, job):
+        self._show_busy(job, f"{job.verb}…")
+        if job.doc_ids:
+            self.refresh_tree()
+
+    def _on_job_idle(self, job):
+        if self.jobs._q.empty():
+            self.status_spinner.stop()
+            self.status_busy.hide()
+        self.doc_panel.set_busy(set())
+        for ed in self.editors.values():
+            ed.set_busy(None)
+        if job.doc_ids:
+            self.refresh_tree()
 
     def _on_job_finished(self, name, result, err):
         if not self.jobs.busy and self.jobs._q.empty():
@@ -566,6 +603,11 @@ read a drawing.</p>
             status, col = "✓", t["ok"]
         if d.is_stale and not status:
             status = "•"
+        working = self.jobs.current is not None and d.id in self.jobs.current.doc_ids
+        if working:
+            status, col = "working…", t["accent"]
+        elif d.id in self.jobs.pending_doc_ids:
+            status, col = "queued", t["muted"]
         it = QTreeWidgetItem([d.title, status])
         it.setData(0, ROLE, ("doc", d.id))
         it.setIcon(0, theme.icon(kind_icon(d), t["muted"]))
@@ -718,9 +760,12 @@ read a drawing.</p>
         self._run_import(s, folder)
 
     def _run_import(self, s, folder: Path):
+        lib_root = str(self.lib.root)
+
         def job(ctx):
-            return ingest.import_system_folder(self.lib, s, folder, progress=ctx.progress, cancel=ctx.cancelled, log=ctx.log)
-        self.jobs.submit(f"Import {s.name}", job, on_done=lambda ids: (self.refresh_all(), self.schedule_index()))
+            return ctx.run_process("retrorag.proc:import_folder_job", library=lib_root, system_id=s.id, folder=str(folder))
+        self.jobs.submit(f"Import {s.name}", job, on_done=lambda ids: (self.refresh_all(), self.schedule_index()),
+                         verb=f"Importing into {s.name}")
 
     def consolidate(self):
         if QMessageBox.question(self, "Make portable", "Copy every linked-in-place file into the library folder?") \
@@ -772,9 +817,11 @@ read a drawing.</p>
             if dlg.exec():
                 v = dlg.values()
                 s = self.lib.system(v["system_id"])
-                self.jobs.submit(f"Add {len(files)} file(s) to {s.name}", lambda ctx: ingest.add_files(
-                    self.lib, s, v["category"], files, copy=v["copy"], progress=ctx.progress, cancel=ctx.cancelled,
-                    log=ctx.log), on_done=self._after_add)
+                lib_root = str(self.lib.root)
+                self.jobs.submit(f"Add {len(files)} file(s) to {s.name}", lambda ctx: ctx.run_process(
+                    "retrorag.proc:add_files_job", library=lib_root, system_id=s.id, category=v["category"],
+                    paths=[str(f) for f in files], copy=v["copy"]), on_done=self._after_add,
+                    verb=f"Adding {len(files)} file(s)")
         for folder in folders:
             dlg = AddDialog(self, self.lib.systems(), system, [folder], folder=True)
             if category:
@@ -782,9 +829,11 @@ read a drawing.</p>
             if dlg.exec():
                 v = dlg.values()
                 s = self.lib.system(v["system_id"])
-                self.jobs.submit(f"Add folder {folder.name}", lambda ctx, folder=folder, v=v, s=s: ingest.add_folder(
-                    self.lib, s, v["category"], folder, copy=v["copy"], kinds=v["kinds"], progress=ctx.progress,
-                    cancel=ctx.cancelled, log=ctx.log), on_done=self._after_add)
+                lib_root = str(self.lib.root)
+                self.jobs.submit(f"Add folder {folder.name}", lambda ctx, folder=folder, v=v, s=s: ctx.run_process(
+                    "retrorag.proc:add_folder_job", library=lib_root, system_id=s.id, category=v["category"],
+                    folder=str(folder), copy=v["copy"], kinds=sorted(v["kinds"]) if v["kinds"] is not None else None),
+                    on_done=self._after_add, verb=f"Adding folder {folder.name}")
 
     def _after_add(self, ids):
         self.log(f"Added {len(ids or [])} document(s).")
@@ -817,7 +866,7 @@ read a drawing.</p>
 
     def ocr_docs(self, ids: list[int], force: bool = False, pages: list[int] | None = None, psm: int | None = None,
                  on_done=None, cleanup: str | None = None):
-        from ..ocr import has_manual_edits, ocr_document
+        from ..ocr import has_manual_edits
         if not self._tesseract_ok():
             return
         docs = [d for d in (self.lib.document(i) for i in ids) if d and d.kind in ("pdf", "image")]
@@ -837,22 +886,22 @@ read a drawing.</p>
         for d in docs:
             self._close_editor(d.id) if pages is None else None
         tess = self.app_settings.tesseract_path
+        lib_root, doc_ids = str(self.lib.root), [d.id for d in docs]
 
         def job(ctx):
-            out = []
-            for d in docs:
-                if ctx.cancelled():
-                    break
-                out.append(ocr_document(self.lib, self.lib.document(d.id), pages=pages, force=force, psm=psm, cleanup=cleanup,
-                                        progress=ctx.progress, cancel=ctx.cancelled, log=ctx.log, app_tesseract=tess))
-            return out
+            # separate process: PDF rendering and image clean-up would otherwise freeze the window
+            return ctx.run_process("retrorag.proc:ocr_job", library=lib_root, doc_ids=doc_ids, pages=pages,
+                                   force=force, psm=psm, cleanup=cleanup, app_tesseract=tess)
 
         def done(res):
             self.refresh_all()
             self.schedule_index()
             if on_done:
                 on_done(res)
-        self.jobs.submit(f"OCR {len(docs)} document(s)" if not pages else f"Re-OCR page {pages[0]}", job, on_done=done)
+        self.jobs.submit(f"OCR {len(docs)} document(s)" if not pages else f"Re-OCR page {pages[0]}", job, on_done=done,
+                         doc_ids=doc_ids, verb="Running OCR" if not pages else f"Re-running OCR on page {pages[0]}")
+        if not self.jobs.busy:
+            self.statusBar().showMessage("OCR started - it runs in the background; you can keep working.", 6000)
 
     # ================================================================== index
     def schedule_index(self):
@@ -948,8 +997,11 @@ read a drawing.</p>
                     != QMessageBox.Yes:
                 return
             self._close_editor(doc_id)
-            ingest.extract(self.lib, d, log=self.log)
-            self.refresh_all(); self.doc_panel.show_doc(self.lib.document(doc_id)); self.schedule_index()
+            lib_root = str(self.lib.root)
+            self.jobs.submit(f"Re-extract {d.title}", lambda ctx: ctx.run_process(
+                "retrorag.proc:extract_job", library=lib_root, doc_id=doc_id),
+                on_done=lambda _r: (self.refresh_all(), self.schedule_index()), doc_ids=[doc_id],
+                verb="Re-extracting text")
         elif action == "index":
             self.build_index(False, [doc_id])
         elif action == "open_original":
@@ -989,13 +1041,23 @@ read a drawing.</p>
             ed = self.editors[doc_id]
         else:
             ed = ProofEditor(self.lib, d, self.app_settings.editor_font_size)
-            ed.saved.connect(lambda i: (self.refresh_tree(), self.schedule_index(), self.refresh_stats()))
+            ed.saved.connect(lambda i: (self.refresh_tree(), self.schedule_index(), self.refresh_stats(),
+                                        self.statusBar().showMessage(f"Saved {self.lib.document(i).title}", 4000)))
+            ed.dirty_changed.connect(lambda dirty, ed=ed: self._mark_tab(ed, dirty))
+            ed.cancel_job.connect(self.jobs.cancel)
             ed.request_reocr.connect(self._reocr_page)
             self.editors[doc_id] = ed
             self.tabs.addTab(ed, (d.title[:28] + "…") if len(d.title) > 28 else d.title)
         self.tabs.setCurrentWidget(ed)
         if page:
             QTimer.singleShot(50, lambda: ed.goto_page(page))
+
+    def _mark_tab(self, ed, dirty: bool):
+        i = self.tabs.indexOf(ed)
+        if i >= 0:
+            title = (ed.doc.title[:28] + "…") if len(ed.doc.title) > 28 else ed.doc.title
+            self.tabs.setTabText(i, ("\u25cf " if dirty else "") + title)
+            self.tabs.setTabToolTip(i, "Unsaved changes - Ctrl+S to save" if dirty else ed.doc.title)
 
     def _reocr_page(self, doc_id: int, page: int, psm: int, cleanup: str):
         ed = self.editors.get(doc_id)

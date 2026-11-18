@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 
 from PySide6.QtCore import QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import (QAction, QBrush, QColor, QFont, QImage, QKeySequence, QPainter, QPen, QPixmap,
+from PySide6.QtGui import (QAction, QBrush, QColor, QFont, QImage, QKeySequence, QPainter, QPainterPath, QPen, QPixmap,
                            QSyntaxHighlighter, QTextCharFormat, QTextCursor, QTextDocument)
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QMenu, QToolButton, QGraphicsPixmapItem, QGraphicsRectItem, QGraphicsScene,
                                QGraphicsView, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPlainTextEdit,
@@ -46,6 +46,37 @@ def box_colors(kind: str) -> tuple:
         return c, (fill if kind != "line" else None)
     return {"flag": (QColor(220, 60, 60, 160), QColor(255, 80, 80, 40)), "line": (QColor(40, 120, 255), None),
             "word": (QColor(255, 140, 0), QColor(255, 160, 0, 70))}[kind]
+
+
+REMOVED_LINE = "<!-- removed: OCR noise -->"
+
+
+def is_noise_line(line: str, threshold: int = 70) -> bool:
+    """True for lines that are mostly OCR junk (specks and fragments of diagrams), not real-but-misread words:
+    most tokens are tiny or punctuation-heavy AND the line's average confidence is low."""
+    tokens: list[tuple[str, int]] = []
+    pos = 0
+    for m in MARKER_RE.finditer(line):
+        tokens += [(w, 95) for w in line[pos:m.start()].split()]
+        tokens.append((m.group(1), int(m.group(2))))
+        pos = m.end()
+    tokens += [(w, 95) for w in line[pos:].split()]
+    if not tokens:
+        return False
+    alnum_total = sum(sum(ch.isalnum() for ch in w) for w, _ in tokens)
+    if alnum_total <= 2:
+        return True
+    def junk(w: str) -> bool:
+        a = sum(ch.isalnum() for ch in w)
+        return a <= 2 or a / len(w) < 0.5
+    junk_share = sum(junk(w) for w, _ in tokens) / len(tokens)
+    mean_conf = sum(c for _, c in tokens) / len(tokens)
+    return junk_share >= 0.7 and mean_conf < max(50, threshold - 10)
+
+
+def counts_as_ocr_line(t: str) -> bool:
+    """Lines that correspond 1:1 to OCR lines on the scan (removed-noise placeholders still count)."""
+    return bool(t.strip()) and (not COMMENT_LINE_RE.match(t) or t.strip() == REMOVED_LINE)
 
 
 class MarkerHighlighter(QSyntaxHighlighter):
@@ -260,6 +291,8 @@ class FindBar(QWidget):
 class ProofEditor(QWidget):
     saved = Signal(int)                  # doc id
     request_reocr = Signal(int, int, int, str)  # doc id, page, psm, cleanup
+    dirty_changed = Signal(bool)
+    cancel_job = Signal()
 
     def __init__(self, lib: Library, doc: Document, font_size: int = 11):
         super().__init__()
@@ -267,6 +300,9 @@ class ProofEditor(QWidget):
         self.ocr = load_ocr_json(lib, doc)
         self.threshold = int(self.ocr.get("threshold", lib.settings.low_conf_threshold))
         self.cur_page = None
+        self._last_loc = None
+        self._flash_item = None
+        self._flash_left = 0
         self._static_overlay: list = []
         self._img_cache: dict[int, object] = {}
         self.editable = bool(doc.text_path) and doc.text_path != doc.path
@@ -278,6 +314,10 @@ class ProofEditor(QWidget):
         tb.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         tb.setIconSize(QSize(16, 16))
         lay.addWidget(tb)
+        from .widgets import BusyBanner
+        self.busy = BusyBanner()
+        self.busy.cancel.connect(self.cancel_job.emit)
+        lay.addWidget(self.busy)
         self._icons: list = []
         # scan tools live in their own toolbar above the page image
         stb = QToolBar()
@@ -304,7 +344,20 @@ class ProofEditor(QWidget):
             lv.addWidget(self.view, 1)
             left.setMinimumWidth(320)
             self.split.addWidget(left)
-        self.split.addWidget(self.text)
+        right = QWidget()
+        rv = QVBoxLayout(right)
+        rv.setContentsMargins(0, 0, 0, 0)
+        rv.setSpacing(4)
+        self.loupe = QLabel()
+        self.loupe.setObjectName("loupe")
+        self.loupe.setAlignment(Qt.AlignCenter)
+        self.loupe.setFixedHeight(118)
+        self.loupe.setMinimumWidth(10)
+        self.loupe.setToolTip("Magnified view of the line you're on, with the current word boxed")
+        self.loupe.setVisible(self.has_pages)
+        rv.addWidget(self.loupe)
+        rv.addWidget(self.text, 1)
+        self.split.addWidget(right)
         self.split.setStretchFactor(0, 1)
         self.split.setStretchFactor(1, 1)
         lay.addWidget(self.split, 1)
@@ -326,6 +379,9 @@ class ProofEditor(QWidget):
             return a
 
         self.a_save = act("Save", self.save, "Ctrl+S", None, "save")
+        self.saved_lbl = QLabel("")
+        self.saved_lbl.setObjectName("savedFlash")
+        tb.addWidget(self.saved_lbl)
         tb.addSeparator()
         act("Prev", self.prev_flag, "Shift+F3", "Previous low-confidence word", "prev")
         act("Next flag", self.next_flag, "F3", "Next low-confidence word (selects it so you can type over it)", "flag")
@@ -336,6 +392,9 @@ class ProofEditor(QWidget):
         mm = QMenu(more)
         mm.addAction("Accept all flagged words on this page", self.accept_page)
         mm.addAction("Accept all flagged words in document…", self.accept_all)
+        mm.addSeparator()
+        mm.addAction("Delete garbage lines on this page…", self.delete_garbage_lines).setToolTip(
+            "Remove lines that are mostly OCR noise - typical around diagrams and schematics")
         more.setMenu(mm)
         tb.addWidget(more)
         tb.addSeparator()
@@ -353,6 +412,11 @@ class ProofEditor(QWidget):
                 b = stb.widgetForAction(z)
                 if b:
                     b.setToolButtonStyle(Qt.ToolButtonIconOnly)
+            self.a_spot = QAction("Spotlight", self, checkable=True, checked=True)
+            self.a_spot.setToolTip("Dim the page except the line you're editing")
+            self.a_spot.toggled.connect(lambda _on: (setattr(self, "_last_loc", None), self._sync()))
+            stb.addAction(self.a_spot)
+            self._icons.append((self.a_spot, "view"))
             stb.addSeparator()
             # Re-OCR split button: click = re-OCR this page; arrow = choose layout mode and cleanup
             from PySide6.QtGui import QActionGroup
@@ -400,6 +464,8 @@ class ProofEditor(QWidget):
         self.text.cursorPositionChanged.connect(self._schedule_sync)
         self.text.textChanged.connect(self._on_changed)
         self._sync_timer = QTimer(self, singleShot=True, interval=60, timeout=self._sync)
+        self._flash_timer = QTimer(self, interval=120, timeout=self._flash_tick)
+        self.text.document().modificationChanged.connect(self.dirty_changed.emit)
         self._count_timer = QTimer(self, singleShot=True, interval=400, timeout=self._update_count)
         if self.has_pages:
             QTimer.singleShot(0, lambda: self._show_page(1))
@@ -450,7 +516,43 @@ class ProofEditor(QWidget):
         self.text.document().setModified(False)
         self.doc = self.lib.document(self.doc.id)
         self.saved.emit(self.doc.id)
+        self.saved_lbl.setText("\u2713 Saved")
+        QTimer.singleShot(2500, lambda: self.saved_lbl.setText(""))
         return True
+
+    def set_busy(self, text: str | None):
+        """A job (e.g. re-OCR) is working on this document: show progress and lock editing meanwhile."""
+        if text:
+            self.busy.show_busy(text)
+            self.text.setReadOnly(True)
+        else:
+            self.busy.clear()
+            self.text.setReadOnly(not self.editable)
+
+    # ------------------------------------------------------------------ OCR noise
+    def delete_garbage_lines(self):
+        """Replace lines that are mostly low-confidence noise (diagrams, schematics) on the current page with a
+        placeholder comment: not indexed, but keeps the remaining lines aligned with the scan."""
+        lo, hi = self._page_range()
+        seg = self.text.toPlainText()[lo:hi]
+        out, n = [], 0
+        for line in seg.split("\n"):
+            if not counts_as_ocr_line(line) or line.strip() == REMOVED_LINE or PAGE_RE.match(line):
+                out.append(line)
+                continue
+            if is_noise_line(line, self.threshold):
+                out.append(REMOVED_LINE)
+                n += 1
+            else:
+                out.append(line)
+        if not n:
+            QMessageBox.information(self, "Garbage lines", "No lines on this page look like OCR noise.")
+            return
+        if QMessageBox.question(self, "Garbage lines",
+                                f"Remove {n} line(s) on this page that are mostly OCR noise (typically text OCR "
+                                "'found' in diagrams and schematics)?\n\nThey become a hidden placeholder so the "
+                                "rest still lines up with the scan. Ctrl+Z undoes it.") == QMessageBox.Yes:
+            self._replace_range(lo, hi, "\n".join(out))
 
     def _on_changed(self):
         if not getattr(self, "_loading", False):
@@ -614,10 +716,12 @@ class ProofEditor(QWidget):
         if n not in self._img_cache:
             try:
                 self._img_cache = {k: v for k, v in list(self._img_cache.items())[-4:]}
-                self._img_cache[n] = render_page(self.lib, self.doc, n, dpi=150)
+                self._img_cache[n] = render_page(self.lib, self.doc, n, dpi=200)
             except Exception:
                 self._img_cache[n] = None
         pj = self.ocr.get("pages", {}).get(str(n))
+        self._stop_flash()
+        self._last_loc = None
         self.view.set_image(self._img_cache[n], pj.get("width") if pj else None)
         if pj:
             for line in pj.get("lines", []):
@@ -647,7 +751,7 @@ class ProofEditor(QWidget):
             if m:
                 page = int(m.group(1))
                 break
-            if t.strip() and not COMMENT_LINE_RE.match(t):
+            if counts_as_ocr_line(t):
                 idx += 1
             b = b.previous()
         if page is None:
@@ -665,19 +769,118 @@ class ProofEditor(QWidget):
         if page is None:
             return
         self._show_page(page)
-        # dynamic overlay: current line + word
+        # dynamic overlay: spotlight + current line + current word
         for it in [i for i in self.view.overlay if i not in self._static_overlay]:
             self.view.scene().removeItem(it)
         self.view.overlay = list(self._static_overlay)
         pj = self.ocr.get("pages", {}).get(str(page))
         if not pj or li < 0 or li >= len(pj.get("lines", [])):
+            self._update_loupe(None, None)
             return
         line = pj["lines"][li]
+        if getattr(self, "a_spot", None) is not None and self.a_spot.isChecked():
+            self._add_spotlight(line["b"])
         self.view.add_box(line["b"], *box_colors("line"), 2)
         words = line["words"]
-        if 0 <= wi < len(words):
-            item = self.view.add_box(words[wi]["b"], *box_colors("word"), 2)
-            self.view.ensureVisible(item, 60, 60)
+        word = words[wi] if 0 <= wi < len(words) else None
+        item = self.view.add_box(word["b"], *box_colors("word"), 2) if word else None
+        loc = (page, li, wi)
+        if loc != self._last_loc:          # moved to another word: flash it and bring it into view
+            self._last_loc = loc
+            if word:
+                self._flash(word["b"])
+                vp = self.view.viewport()
+                self.view.ensureVisible(item, vp.width() // 4, vp.height() // 4)
+        self._update_loupe(line, word)
+
+    # ------------------------------------------------------------------ spotlight / flash / loupe
+    def _add_spotlight(self, b):
+        s = self.view.scale_factor
+        path = QPainterPath()
+        path.addRect(self.view.sceneRect())
+        hole = QPainterPath()
+        hole.addRect(QRectF(b[0] * s - 8, b[1] * s - 6, (b[2] - b[0]) * s + 16, (b[3] - b[1]) * s + 12))
+        it = self.view.scene().addPath(path.subtracted(hole), QPen(Qt.NoPen), QBrush(QColor(0, 0, 0, 80)))
+        it.setZValue(4)
+        self.view.overlay.append(it)
+
+    def _flash(self, b):
+        self._stop_flash()
+        s = self.view.scale_factor
+        col = QColor(theme.T["accent"]) if theme.is_retro() else QColor(255, 70, 0)
+        fill = QColor(col)
+        fill.setAlpha(90)
+        r = QRectF(b[0] * s - 6, b[1] * s - 6, (b[2] - b[0]) * s + 12, (b[3] - b[1]) * s + 12)
+        self._flash_item = self.view.scene().addRect(r, QPen(col, 4), QBrush(fill))
+        self._flash_item.setZValue(7)
+        self._flash_left = 6
+        self._flash_timer.start()
+
+    def _flash_tick(self):
+        try:
+            if not self._flash_item or self._flash_left <= 0:
+                self._stop_flash()
+                return
+            self._flash_item.setVisible(not self._flash_item.isVisible())
+            self._flash_left -= 1
+        except RuntimeError:            # scene was cleared (page changed)
+            self._flash_item = None
+            self._flash_timer.stop()
+
+    def _stop_flash(self):
+        self._flash_timer.stop()
+        if self._flash_item is not None:
+            try:
+                self.view.scene().removeItem(self._flash_item)
+            except RuntimeError:
+                pass
+            self._flash_item = None
+
+    def _update_loupe(self, line, word):
+        if not self.has_pages:
+            return
+        img = self._img_cache.get(self.cur_page)
+        pj = self.ocr.get("pages", {}).get(str(self.cur_page))
+        if img is None or line is None or not pj or not pj.get("width"):
+            self.loupe.setPixmap(QPixmap())
+            self.loupe.setText("Click a line of text, or press F3, to see it magnified here.")
+            return
+        sx, sy = img.width / pj["width"], img.height / pj["height"]
+        b = list(line["b"])
+        if word:   # Tesseract sometimes returns a whole column as one "line": then zoom on the word itself
+            wb = word["b"]
+            wh = max(1, wb[3] - wb[1])
+            if (b[3] - b[1]) > 2.5 * wh:
+                b = [wb[0] - 6 * wh, wb[1] - wh * 0.6, wb[2] + 6 * wh, wb[3] + wh * 0.6]
+        line_h = max(4, (b[3] - b[1]) * sy)
+        pad = int(line_h * 0.5) + 3
+        y0, y1 = max(0, int(b[1] * sy) - pad), min(img.height, int(b[3] * sy) + pad)
+        avail_w, avail_h = max(50, self.loupe.width() - 10), self.loupe.height() - 10
+        mag = min(3.5, avail_h / max(1, y1 - y0))
+        win = avail_w / mag                                   # source pixels that fit across the loupe
+        x0, x1 = max(0, int(b[0] * sx) - pad), min(img.width, int(b[2] * sx) + pad)
+        if x1 - x0 > win:                                     # long line: centre the window on the word
+            cx = ((word["b"][0] + word["b"][2]) / 2 * sx) if word else x0 + win / 2
+            x0 = int(max(0, min(cx - win / 2, img.width - win)))
+            x1 = int(min(img.width, x0 + win))
+        crop = img.crop((x0, y0, x1, y1))
+        crop = theme.phosphorize(crop) if theme.is_retro() else crop.convert("RGB")
+        qimg = QImage(crop.tobytes("raw", "RGB"), crop.width, crop.height, crop.width * 3, QImage.Format_RGB888).copy()
+        f = min(mag, avail_w / max(1, crop.width))
+        pm = QPixmap.fromImage(qimg).scaled(max(1, int(crop.width * f)), max(1, int(crop.height * f)),
+                                            Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        if word:
+            wb = word["b"]
+            p = QPainter(pm)
+            col = QColor(theme.T["accent"]) if theme.is_retro() else QColor(255, 70, 0)
+            p.setPen(QPen(col, 2.5))
+            fill = QColor(col)
+            fill.setAlpha(40)
+            p.setBrush(fill)
+            p.drawRect(QRectF((wb[0] * sx - x0) * f - 3, (wb[1] * sy - y0) * f - 3,
+                              (wb[2] - wb[0]) * sx * f + 6, (wb[3] - wb[1]) * sy * f + 6))
+            p.end()
+        self.loupe.setPixmap(pm)
 
     def _on_image_click(self, x: float, y: float):
         pj = self.ocr.get("pages", {}).get(str(self.cur_page))
@@ -700,7 +903,7 @@ class ProofEditor(QWidget):
         b = text_doc.findBlock(m.start()).next()
         idx = -1
         while b.isValid() and not PAGE_RE.match(b.text()):
-            if b.text().strip() and not COMMENT_LINE_RE.match(b.text()):
+            if counts_as_ocr_line(b.text()):
                 idx += 1
                 if idx == target:
                     words = pj["lines"][target]["words"]

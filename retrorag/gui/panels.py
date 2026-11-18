@@ -39,6 +39,7 @@ class DocPanel(QWidget):
     changed = Signal(int)
     open_doc = Signal(int)        # navigate to a linked document
     links_changed = Signal()
+    cancel_job = Signal()
 
     def __init__(self, lib: Library):
         super().__init__()
@@ -65,6 +66,18 @@ class DocPanel(QWidget):
         self.sub_lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
         v.addWidget(self.title_lbl)
         v.addWidget(self.sub_lbl)
+        from .widgets import BusyBanner
+        self.busy = BusyBanner()
+        self.busy.cancel.connect(self.cancel_job.emit)
+        v.addWidget(self.busy)
+        self.callout = QLabel()
+        self.callout.setObjectName("callout")
+        self.callout.setWordWrap(True)
+        self.callout.setTextFormat(Qt.RichText)
+        self.callout.hide()
+        v.addWidget(self.callout)
+        self.busy_ids: set = set()        # maintained by the main window
+        self.busy_text = ""
 
         box = QGroupBox("Details")
         f = QFormLayout(box)
@@ -82,7 +95,9 @@ class DocPanel(QWidget):
         self.save_btn = QPushButton("Save details")
         self.save_btn.setObjectName("primary")
         self.save_btn.clicked.connect(self.save)
-        row = QHBoxLayout(); row.addStretch(); row.addWidget(self.save_btn)
+        self.saved_lbl = QLabel("")
+        self.saved_lbl.setObjectName("savedFlash")
+        row = QHBoxLayout(); row.addStretch(); row.addWidget(self.saved_lbl); row.addWidget(self.save_btn)
         f.addRow(row)
 
         # command bar: the common actions as buttons, the rest under "More"
@@ -95,8 +110,6 @@ class DocPanel(QWidget):
             self._button_icons[key] = ic
             if key in PRIMARY_ACTIONS:
                 b = QPushButton(label)
-                if key == "open_editor":
-                    b.setObjectName("primary")
                 b.clicked.connect(lambda _=False, k=key: self.doc and self.action.emit(k, self.doc.id))
                 bar.addWidget(b)
                 self.buttons[key] = b
@@ -251,6 +264,8 @@ class DocPanel(QWidget):
             self.notes.clear()
             self.info.clear()
             self.rel_list.clear()
+            self.callout.hide()
+            self.busy.clear()
             self.preview.show_doc(None)
             return
         self.title.setText(d.title); self.category.setCurrentText(d.category)
@@ -272,14 +287,85 @@ class DocPanel(QWidget):
         self._fill_links(d)
         self.preview.show_doc(d)
 
+    # ------------------------------------------------------------------ guidance
+    def _set_primary(self, key: str | None):
+        """Highlight the button for the next sensible step (OCR before proofreading)."""
+        for k in PRIMARY_ACTIONS:
+            b = self.buttons[k]
+            want = "primary" if k == key else ""
+            if b.objectName() != want:
+                b.setObjectName(want)
+                b.style().unpolish(b)
+                b.style().polish(b)
+
+    def _guide(self, d: Document):
+        """Label the actions for this document's state and say what to do next."""
+        scan = d.kind in ("pdf", "image")
+        busy = d.id in self.busy_ids
+        no_text = scan and d.text_status == "none"
+        b_edit, b_ocr = self.buttons["open_editor"], self.buttons["ocr"]
+        b_edit.setText(f"Proofread ({d.flagged} flagged)" if scan and d.flagged else "Proofread" if scan else "Open text")
+        b_edit.setEnabled(not busy and (bool(d.text_path) and not no_text))
+        b_edit.setToolTip("Run OCR first - there is no text to proofread yet." if no_text else
+                          "Open the text editor (scan on the left, text on the right).")
+        b_ocr.setText("Run OCR" if (d.needs_ocr or no_text) else "Re-run OCR")
+        b_ocr.setEnabled(scan and not busy)
+        self.buttons["ocr_force"].setEnabled(scan and not busy)
+        self.buttons["reextract"].setEnabled(not busy)
+        t = theme.T
+        step = lambda n, of, title: f"<b>Step {n} of {of} - {title}.</b> "
+        state = ""
+        if busy:
+            self.callout.hide()
+            self._set_primary(None)
+            return
+        if scan and (d.needs_ocr or no_text):
+            self._set_primary("ocr")
+            msg = (step(1, 2, "Run OCR") + ("This is a scan with no text yet. " if no_text else
+                                            "Some pages are scans without a text layer. ") +
+                   "OCR reads the pages and flags any words it isn't sure about; you check those in step 2 "
+                   "(Proofread).")
+        elif scan and d.flagged:
+            self._set_primary("open_editor")
+            msg = (step(2, 2, "Proofread") + f"OCR flagged {d.flagged} word(s) it wasn't sure about. Click "
+                   "<b>Proofread</b>, press <b>F3</b> to jump to each one, type the fix, <b>Ctrl+Enter</b> to "
+                   "accept it.")
+        elif scan and d.text_status == "ocr":
+            self._set_primary("open_editor")
+            msg = ("<b>Almost done.</b> No flagged words left. Have a final look in <b>Proofread</b> and click "
+                   "<b>Mark reviewed</b> when you're happy.")
+        else:
+            self._set_primary(None)
+            msg, state = ("&#10003; Proofread. " if d.text_status == "reviewed" else "") + (
+                "The AI can search this document." if not d.is_stale else ""), "done"
+        if d.is_stale:
+            msg += ("<br>" if msg else "") + (f"<span style='color:{t['muted']}'>Changes aren't searchable yet - "
+                                              "indexing runs automatically, or press F5.</span>")
+        self.callout.setProperty("state", state)
+        self.callout.style().unpolish(self.callout)
+        self.callout.style().polish(self.callout)
+        self.callout.setText(msg)
+        self.callout.setVisible(bool(msg))
+
+    def set_busy(self, doc_ids: set, text: str = ""):
+        """Main window tells us which documents a running job is working on."""
+        self.busy_ids, self.busy_text = set(doc_ids), text
+        if self.doc and self.doc.id in self.busy_ids:
+            self.busy.show_busy(text or "Working…")
+        else:
+            self.busy.clear()
+        if self.doc:
+            self._guide(self.doc)
+
     def _fill_info(self, d: Document):
+        if d.id in self.busy_ids:
+            self.busy.show_busy(self.busy_text or "Working…")
+        else:
+            self.busy.clear()
         s = self.lib.system(d.system_id)
         self.title_lbl.setText(d.title)
         self.sub_lbl.setText(" · ".join(x for x in (s.name if s else "", d.category, d.group_path) if x))
-        can_ocr = d.kind in ("pdf", "image")
-        self.buttons["ocr"].setEnabled(can_ocr)
-        self.buttons["ocr_force"].setEnabled(can_ocr)
-        self.buttons["open_editor"].setEnabled(bool(d.text_path) or can_ocr)
+        self._guide(d)
         t = theme.T
         p = self.lib.abspath(d.path)
         linked = Path(d.path).is_absolute()
@@ -311,6 +397,9 @@ class DocPanel(QWidget):
             refresh_info_cards(self.lib, d)
         self.show_doc(self.lib.document(d.id))
         self.changed.emit(d.id)
+        from PySide6.QtCore import QTimer
+        self.saved_lbl.setText("\u2713 Saved")
+        QTimer.singleShot(2500, lambda: self.saved_lbl.setText(""))
 
 
 class SearchPanel(QWidget):

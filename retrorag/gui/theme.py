@@ -454,6 +454,12 @@ QGraphicsView {{ background: {t['scrim']}; border: 1px solid {t['border']}; bord
 QPlainTextEdit#log {{ background: {t['surface2']}; border: none; color: {t['muted']}; font-family: '{t['mono']}'; }}
 QToolTip {{ background: {t['surface']}; color: {t['text']}; border: 1px solid {t['border']}; padding: 5px 8px; border-radius: 6px; }}
 QMessageBox QLabel {{ min-width: 280px; }}
+QFrame#busyBanner {{ background: {t['accent_soft']}; border: 1px solid {t['accent']}; border-radius: 8px; }}
+QFrame#busyBanner QLabel {{ color: {t['text']}; }}
+QLabel#callout {{ background: {t['accent_soft']}; border-radius: 8px; padding: 8px 10px; color: {t['text']}; }}
+QLabel#callout[state="done"] {{ background: {t['surface2']}; color: {t['muted']}; }}
+QLabel#loupe {{ background: {t['scrim']}; border: 1px solid {t['border']}; border-radius: 6px; }}
+QLabel#savedFlash {{ color: {t['ok']}; font-weight: {t['bold']}; padding: 0 8px; }}
 """
 
 

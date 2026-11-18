@@ -17,6 +17,8 @@ class Job:
     on_done: Callable[[Any], None] | None = None
     on_error: Callable[[str], None] | None = None
     id: int = field(default=0)
+    doc_ids: frozenset = frozenset()      # documents this job works on (for busy indicators)
+    verb: str = ""                        # e.g. "Running OCR"
 
 
 class JobContext:
@@ -32,9 +34,20 @@ class JobContext:
     def cancelled(self) -> bool:
         return self.runner._cancel.is_set()
 
+    def run_process(self, target: str, **kwargs):
+        """Run module:function in a separate process (keeps the window responsive); None if cancelled."""
+        from ..proc import Cancelled, run_in_process
+        try:
+            return run_in_process(target, kwargs, progress=self.progress, log=self.log, cancelled=self.cancelled)
+        except Cancelled:
+            self.log("Cancelled.")
+            return None
+
 
 class JobRunner(QObject):
     started = Signal(str)
+    job_started = Signal(object)             # Job
+    job_ended = Signal(object)               # Job
     progress = Signal(int, int, str)
     log = Signal(str)
     finished = Signal(str, object, str)      # name, result, error-text
@@ -47,13 +60,16 @@ class JobRunner(QObject):
         self._cancel = threading.Event()
         self._next_id = 1
         self.busy = False
+        self.current: Job | None = None
+        self.pending_doc_ids: set = set()
         self._deliver.connect(self._on_deliver)
         self._thread = threading.Thread(target=self._loop, daemon=True, name="retrorag-jobs")
         self._thread.start()
 
-    def submit(self, name: str, fn, on_done=None, on_error=None) -> int:
-        job = Job(name, fn, on_done, on_error, self._next_id)
+    def submit(self, name: str, fn, on_done=None, on_error=None, doc_ids=(), verb: str = "") -> int:
+        job = Job(name, fn, on_done, on_error, self._next_id, frozenset(doc_ids), verb or name)
         self._next_id += 1
+        self.pending_doc_ids |= set(job.doc_ids)
         self._q.put(job)
         self.queue_changed.emit(self._q.qsize() + int(self.busy))
         return job.id
@@ -82,7 +98,9 @@ class JobRunner(QObject):
                 return
             self._cancel.clear()
             self.busy = True
+            self.current = job
             self.started.emit(job.name)
+            self.job_started.emit(job)
             result, err = None, ""
             try:
                 result = job.fn(JobContext(self, job))
@@ -90,6 +108,9 @@ class JobRunner(QObject):
                 err = f"{e}"
                 self.log.emit(f"ERROR in '{job.name}': {e}\n{traceback.format_exc(limit=4)}")
             self.busy = False
+            self.current = None
+            self.pending_doc_ids -= set(job.doc_ids)
+            self.job_ended.emit(job)
             self._deliver.emit(job, result, err)
             self.finished.emit(job.name, result, err)
             self.queue_changed.emit(self._q.qsize())
