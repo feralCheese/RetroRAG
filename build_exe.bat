@@ -8,6 +8,8 @@ if not exist ".venv\Scripts\python.exe" call setup.bat
 ".venv\Scripts\python.exe" -m PyInstaller --noconfirm --clean retrorag.spec || (echo Build failed & pause & exit /b 1)
 
 echo RetroRAG portable mode> "dist\RetroRAG\portable.flag"
+echo Adding the built-in embedding model so the build works offline...
+".venv\Scripts\python.exe" -m retrorag download-model --to "dist\RetroRAG\models\nomic-embed-text-v1.5"
 
 rem Optionally ship Tesseract inside the build so OCR works on PCs without it installed
 set "TESS="

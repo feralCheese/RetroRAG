@@ -40,6 +40,8 @@ def main(argv: list[str] | None = None) -> int:
     ad = sub.add_parser("add"); ad.add_argument("--system", required=True); ad.add_argument("--category", default="Other"); ad.add_argument("--link", action="store_true", help="don't copy, reference in place"); ad.add_argument("paths", nargs="+")
     e = sub.add_parser("export"); e.add_argument("--markdown"); e.add_argument("--jsonl"); e.add_argument("--embeddings", action="store_true")
     sub.add_parser("stats")
+    dm = sub.add_parser("download-model", help="fetch the built-in embedding model now (e.g. before going offline)")
+    dm.add_argument("--to", help="folder to put it in (e.g. dist/RetroRAG/models/bge-small-en-v1.5)")
     cfg = sub.add_parser("settings", help="show or change library settings, e.g. settings api_host=0.0.0.0")
     cfg.add_argument("pairs", nargs="*", metavar="KEY=VALUE")
     args = p.parse_args(argv)
@@ -48,6 +50,10 @@ def main(argv: list[str] | None = None) -> int:
         from .gui.app import run
         return run(args.library)
 
+    if args.cmd == "download-model":
+        from .embeddings import BUILTIN_DEFAULT, ensure_model
+        print(ensure_model(BUILTIN_DEFAULT, target=args.to))
+        return 0
     lib_path = _lib_path(args.library)
     if args.cmd == "mcp":
         from .mcp_server import main as mcp_main

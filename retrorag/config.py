@@ -125,13 +125,15 @@ class LibrarySettings:
     code_chunk_lines: int = 60
 
     # Embeddings
-    embed_provider: str = "ollama"        # ollama | openai | fastembed | none
-    embed_model: str = "nomic-embed-text"
-    embed_url: str = "http://localhost:11434"
+    embed_provider: str = "builtin"       # builtin (no server) | ollama | openai | fastembed | none
+    embed_model: str = "nomic-embed-text-v1.5"
+    embed_url: str = ""
     embed_api_key: str = ""
     embed_doc_prefix: str = "search_document: "
     embed_query_prefix: str = "search_query: "
-    embed_batch: int = 32
+    embed_batch: int = 64                 # chunks per request
+    embed_parallel: int = 2               # requests in flight at once
+    embed_code: bool = False              # embed source-code chunks too (slow for big trees; keyword search always works)
 
     # Servers
     api_host: str = "127.0.0.1"           # 0.0.0.0 to let other PCs on the LAN connect (set api_token too!)
@@ -169,16 +171,22 @@ class LibrarySettings:
 
 # One-click presets for the embedding settings (provider, url, model, doc prefix, query prefix)
 EMBED_PRESETS = {
+    "Built-in - nomic-embed-text (no server needed, recommended)": (
+        "builtin", "", "nomic-embed-text-v1.5", "search_document: ", "search_query: "),
+    "Built-in - bge-small (fastest, less accurate; 34 MB)": (
+        "builtin", "", "bge-small-en-v1.5", "", "Represent this sentence for searching relevant passages: "),
     "Ollama - nomic-embed-text": ("ollama", "http://localhost:11434", "nomic-embed-text", "search_document: ", "search_query: "),
     "Ollama - mxbai-embed-large": ("ollama", "http://localhost:11434", "mxbai-embed-large", "",
                                    "Represent this sentence for searching relevant passages: "),
+    "Ollama - snowflake-arctic-embed:33m (smaller, faster on CPU)": (
+        "ollama", "http://localhost:11434", "snowflake-arctic-embed:33m", "",
+        "Represent this sentence for searching relevant passages: "),
     "Ollama - embeddinggemma": ("ollama", "http://localhost:11434", "embeddinggemma", "title: none | text: ",
                                 "task: search result | query: "),
     "Unsloth Studio (/v1/embeddings)": ("openai", "http://localhost:8888/v1", "default", "", ""),
     "LM Studio (/v1/embeddings)": ("openai", "http://localhost:1234/v1", "text-embedding-nomic-embed-text-v1.5",
                                    "search_document: ", "search_query: "),
     "llama.cpp server (/v1/embeddings)": ("openai", "http://localhost:8080/v1", "default", "", ""),
-    "Built-in (fastembed, no server)": ("fastembed", "", "BAAI/bge-small-en-v1.5", "", ""),
     "None - keyword search only": ("none", "", "", "", ""),
 }
 

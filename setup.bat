@@ -34,11 +34,6 @@ echo Installing packages (this takes a few minutes the first time)...
 ".venv\Scripts\python.exe" -m pip install --upgrade pip >nul
 ".venv\Scripts\python.exe" -m pip install -r requirements.txt || (echo Package install failed. & pause & exit /b 1)
 
-echo.
-choice /c YN /n /m "Install built-in embeddings (fastembed: works without Ollama/Unsloth/LM Studio, ~200 MB)? [Y/N] "
-if errorlevel 2 goto skip_fastembed
-".venv\Scripts\python.exe" -m pip install fastembed || echo fastembed could not be installed on this Python version - use Ollama/Unsloth/LM Studio embeddings instead.
-:skip_fastembed
 
 echo.
 ".venv\Scripts\python.exe" -c "from retrorag.ocr import find_tesseract; import sys; p=find_tesseract(); print('Tesseract OCR:', p or 'NOT FOUND'); sys.exit(0 if p else 1)"

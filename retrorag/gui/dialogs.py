@@ -235,7 +235,7 @@ class SettingsDialog(QDialog):
         self.preset.addItems(list(EMBED_PRESETS))
         self.preset.activated.connect(self._apply_preset)
         f.addRow("Preset", self.preset)
-        self.provider = QComboBox(); self.provider.addItems(["ollama", "openai", "fastembed", "none"])
+        self.provider = QComboBox(); self.provider.addItems(["builtin", "ollama", "openai", "fastembed", "none"])
         self.provider.setCurrentText(st.embed_provider)
         f.addRow("Provider", self.provider)
         self.e_url = QLineEdit(st.embed_url)
@@ -251,6 +251,14 @@ class SettingsDialog(QDialog):
         f.addRow("Chunk size", self.chunk)
         self.overlap = QSpinBox(); self.overlap.setRange(0, 2000); self.overlap.setValue(st.chunk_overlap); self.overlap.setSuffix(" chars")
         f.addRow("Chunk overlap", self.overlap)
+        self.e_batch = QSpinBox(); self.e_batch.setRange(1, 512); self.e_batch.setValue(st.embed_batch)
+        self.e_par = QSpinBox(); self.e_par.setRange(1, 8); self.e_par.setValue(st.embed_parallel)
+        h = QHBoxLayout(); h.addWidget(QLabel("batch")); h.addWidget(self.e_batch); h.addWidget(QLabel("requests at once"))
+        h.addWidget(self.e_par); h.addStretch()
+        f.addRow("Throughput", h)
+        self.e_code = QCheckBox("Embed source code too (slow for big emulator trees; keyword search always covers code)")
+        self.e_code.setChecked(st.embed_code)
+        f.addRow("", self.e_code)
         bt = QPushButton("Test embeddings"); bt.clicked.connect(self._test_embed)
         self.e_status = QLabel(); self.e_status.setWordWrap(True)
         f.addRow(bt, self.e_status)
@@ -357,6 +365,9 @@ class SettingsDialog(QDialog):
         st.embed_query_prefix = self.e_qpre.text()
         st.chunk_chars = self.chunk.value()
         st.chunk_overlap = self.overlap.value()
+        st.embed_batch = self.e_batch.value()
+        st.embed_parallel = self.e_par.value()
+        st.embed_code = self.e_code.isChecked()
         st.api_host = self.host.currentText().strip() or "127.0.0.1"
         st.api_port = self.port.value()
         st.mcp_port = self.mport.value()
@@ -364,7 +375,12 @@ class SettingsDialog(QDialog):
         return st
 
     def _test_embed(self):
-        from ..embeddings import test_embedder
+        from ..embeddings import BUILTIN_MODELS, find_model, test_embedder
+        st = self._collect(LibrarySettings.load(self.lib.root))
+        if st.embed_provider == "builtin" and st.embed_model in BUILTIN_MODELS and not find_model(st.embed_model):
+            self.e_status.setText(f"✓ Built-in model {st.embed_model} (~{BUILTIN_MODELS[st.embed_model]['size_mb']} MB) "
+                                  "downloads automatically the first time you build the index - no server needed.")
+            return
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
             self.e_status.setText("✓ " + test_embedder(self._collect(LibrarySettings.load(self.lib.root))))

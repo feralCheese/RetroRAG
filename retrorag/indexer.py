@@ -65,12 +65,18 @@ def index_document(lib: Library, d: Document) -> int:
     sys_kw = " ".join(x for x in ((s.name, s.aliases.replace(",", " ")) if s else ()) if x)
     flagged = count_markers(lib.read_text(d)) if d.kind in ("pdf", "image") else 0
     c = lib.conn()
+    # Re-indexing after an edit usually changes only a few chunks: keep the embeddings of the unchanged ones
+    # (embedding is by far the slowest part of indexing).
+    old = {(r["heading"], r["text"]): r["embedding"] for r in
+           c.execute("SELECT heading, text, embedding FROM chunks WHERE doc_id=? AND embedding IS NOT NULL", (d.id,))}
+    rows = []
+    for i, ch in enumerate(chunks):
+        heading = f"{d.title} | {ch.heading}" if ch.heading else d.title
+        rows.append((d.id, i, ch.page, heading, ch.text, f"{sys_kw} {hex_keywords(ch.text)}", old.get((heading, ch.text))))
     with c:
         c.execute("DELETE FROM chunks WHERE doc_id=?", (d.id,))
-        c.executemany(
-            "INSERT INTO chunks(doc_id, ord, page, heading, text, keywords) VALUES (?,?,?,?,?,?)",
-            [(d.id, i, ch.page, f"{d.title} | {ch.heading}" if ch.heading else d.title, ch.text,
-              f"{sys_kw} {hex_keywords(ch.text)}") for i, ch in enumerate(chunks)])
+        c.executemany("INSERT INTO chunks(doc_id, ord, page, heading, text, keywords, embedding) VALUES (?,?,?,?,?,?,?)",
+                      rows)
         c.execute("UPDATE documents SET indexed=?, flagged=? WHERE id=?", (now_iso(), flagged, d.id))
     return len(chunks)
 
@@ -79,36 +85,79 @@ def embed_missing(lib: Library, progress=None, cancel=None, log: Log = print) ->
     emb = get_embedder(lib.settings)
     if emb is None:
         return 0
+    import itertools
+    import time
+    from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+    st = lib.settings
     c = lib.conn()
-    rows = c.execute("""SELECT c.id, c.text, c.heading, d.title, s.name AS sysname FROM chunks c
-                        JOIN documents d ON d.id=c.doc_id JOIN systems s ON s.id=d.system_id
-                        WHERE c.embedding IS NULL ORDER BY c.id""").fetchall()
+    code_filter = "" if st.embed_code else " AND d.kind != 'code'"   # source code: keyword search only (fast)
+    rows = c.execute(f"""SELECT c.id, c.text, c.heading, d.title, s.name AS sysname FROM chunks c
+                         JOIN documents d ON d.id=c.doc_id JOIN systems s ON s.id=d.system_id
+                         WHERE c.embedding IS NULL{code_filter} ORDER BY c.id""").fetchall()
     if not rows:
+        lib.set_meta("embed_signature", emb.signature)
         return 0
-    log(f"Embedding {len(rows)} chunks with {lib.settings.embed_provider}/{lib.settings.embed_model} ...")
-    bs = max(1, lib.settings.embed_batch)
-    done = 0
-    for i in range(0, len(rows), bs):
-        if cancel and cancel():
-            log("Embedding cancelled (progress saved).")
-            break
-        batch = rows[i:i + bs]
-        heading = lambda r: r["heading"].split(" | ", 1)[-1]
-        texts = [embed_context(r["title"], r["sysname"], heading(r), r["text"])[:8000] for r in batch]
-        vecs = emb.embed(texts)
-        with c:
-            c.executemany("UPDATE chunks SET embedding=? WHERE id=?",
-                          [(v.astype(np.float32).tobytes(), r["id"]) for v, r in zip(vecs, batch)])
-        done += len(batch)
-        if progress:
-            progress(done, len(rows), f"embedded {done}/{len(rows)}")
+    if hasattr(emb, "prepare"):
+        emb.prepare(log)                       # built-in model: load (download once if needed)
+    log(f"Embedding {len(rows)} chunks with {st.embed_provider}/{st.embed_model} ...")
+    # the built-in model already uses every CPU core; parallel requests only help with servers
+    bs, par = max(1, st.embed_batch), (1 if st.embed_provider == "builtin" else max(1, st.embed_parallel))
+    heading = lambda r: r["heading"].split(" | ", 1)[-1]
+    batches = [rows[i:i + bs] for i in range(0, len(rows), bs)]
+
+    def work(batch):
+        return batch, emb.embed([embed_context(r["title"], r["sysname"], heading(r), r["text"])[:8000] for r in batch])
+
+    done, t0, cancelled = 0, time.time(), False
+    with ThreadPoolExecutor(par) as ex:            # keep `par` requests in flight
+        it = iter(batches)
+        pending = {ex.submit(work, b) for b in itertools.islice(it, par)}
+        while pending:
+            finished, pending = wait(pending, return_when=FIRST_COMPLETED)
+            for f in finished:
+                batch, vecs = f.result()          # re-raises EmbeddingError
+                with c:
+                    c.executemany("UPDATE chunks SET embedding=? WHERE id=?",
+                                  [(v.astype(np.float32).tobytes(), r["id"]) for v, r in zip(vecs, batch)])
+                done += len(batch)
+                if progress:
+                    rate = done / max(0.001, time.time() - t0)
+                    left = (len(rows) - done) / rate if rate else 0
+                    eta = f"~{left / 60:.0f} min left" if left >= 90 else f"~{left:.0f} s left"
+                    progress(done, len(rows), f"embedding {done}/{len(rows)} chunks · {rate:.1f}/s · {eta}")
+            if cancel and cancel():
+                cancelled = True
+            if not cancelled:
+                for b in itertools.islice(it, par - len(pending)):
+                    pending.add(ex.submit(work, b))
+    if cancelled:
+        log("Embedding cancelled (progress saved - Build index continues where it stopped).")
+    else:
+        log(f"Embedded {done} chunks in {time.time() - t0:.0f}s ({done / max(0.001, time.time() - t0):.1f}/s).")
     lib.set_meta("embed_signature", emb.signature)
     return done
+
+
+def _maybe_switch_to_builtin(lib: Library, log: Log) -> None:
+    """A library set to Ollama on a PC without Ollama, with nothing embedded yet: use the built-in model instead
+    of silently falling back to keyword-only search."""
+    st = lib.settings
+    if st.embed_provider != "ollama" or lib.stats()["embedded"]:
+        return
+    from .embeddings import BUILTIN_DEFAULT, BUILTIN_MODELS, ollama_reachable
+    if ollama_reachable(st.embed_url or "http://localhost:11434"):
+        return
+    spec = BUILTIN_MODELS[BUILTIN_DEFAULT]
+    st.embed_provider, st.embed_model, st.embed_url = "builtin", BUILTIN_DEFAULT, ""
+    st.embed_doc_prefix, st.embed_query_prefix = spec["doc_prefix"], spec["query_prefix"]
+    st.save(lib.root)
+    log("Ollama isn't running on this PC - switched this library to the built-in embedding model (no server needed).")
 
 
 def build_index(lib: Library, doc_ids: list[int] | None = None, *, rebuild_all: bool = False,
                 progress=None, cancel=None, log: Log = print) -> dict:
     lib.reload_settings()
+    _maybe_switch_to_builtin(lib, log)
     sig = lib.settings.embed_signature()
     old_sig = lib.get_meta("embed_signature", "")
     c = lib.conn()

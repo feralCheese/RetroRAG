@@ -27,7 +27,7 @@ and other AI systems (including locally hosted ones such as Unsloth Studio, Olla
 
 ### Option A: from source (needs Python 3.10+)
 1. Copy this folder to the PC, but not the `.venv` folder: virtual environments only work on the PC that made them.
-2. Run **`setup.bat`**. It creates `.venv`, installs packages, optionally installs built-in embeddings, checks
+2. Run **`setup.bat`**. It creates `.venv`, installs packages (including the built-in embedder), checks
    for Tesseract, and asks whether to use portable mode.
 3. Start the app with **`RetroRAG.bat`**.
 
@@ -80,6 +80,9 @@ Windows 11-style light and dark themes using the Segoe Fluent icon set. *View �
    | Ctrl+wheel, Ctrl+= / Ctrl+- | zoom the scan |
    | click on the scan | jump to that line in the text |
 
+   - **Seeing what to fix:** the magnifier strip above the text shows the current line from the scan, enlarged, with the word boxed. On the page, the word flashes when you move to it, and *Spotlight* dims everything except the current line.
+   - **Diagram noise:** *More → Delete garbage lines on this page* removes lines that are mostly OCR junk from diagrams and schematics. Ctrl+Z undoes it.
+   - A **●** on the editor tab means unsaved changes. *Save* (Ctrl+S) shows **✓ Saved**.
    - **Re-OCR page** retries one page with another layout mode (*11 - Sparse text* suits schematics and pinouts)
      or another cleanup level.
    - **Mark reviewed** records that the text is proofread.
@@ -136,16 +139,44 @@ Links also appear in each document's indexed header, in `read_document` output, 
 *Generate* for an access token, restart the servers, and use this PC's IP address in the URL.
 
 ### Embeddings
-Settings → Embeddings has presets:
-- **Ollama**: nomic-embed-text, mxbai-embed-large, or embeddinggemma. Run `ollama pull nomic-embed-text` first.
-- **Unsloth Studio**: OpenAI-compatible `/v1/embeddings`, default `http://localhost:8888/v1`, model `default`.
-  Create an API key in Studio (Settings → API) and paste it in.
-- **LM Studio** or **llama.cpp server**: any OpenAI-compatible endpoint.
-- **Built-in (fastembed)**: runs inside RetroRAG with no server (`pip install fastembed`).
-- **None**: keyword search only. This still works well for register names and addresses.
+RetroRAG embeds text **itself by default**, so no Ollama, Unsloth Studio or other AI server is needed.
+
+- **Built-in nomic-embed-text** (the default). This is the same model Ollama serves, run inside RetroRAG on
+  your CPU (ONNX Runtime) on Windows, macOS, Linux and Raspberry Pi.
+  - The model (137 MB) downloads once, the first time you build an index. After that it works offline.
+  - To prepare a machine that will be offline, run `retrorag-cli download-model`. The standalone builds
+    (`build_exe.bat`, `build_app.sh`) include the model automatically.
+- Other presets in Settings → Embeddings, for when you'd rather use a server:
+  - **Built-in bge-small:** 34 MB, about 3× faster, but noticeably less accurate on paraphrased questions.
+  - **Ollama:** nomic-embed-text, mxbai-embed-large or embeddinggemma. Run `ollama pull <model>` first.
+  - **Unsloth Studio:** OpenAI-compatible `/v1/embeddings` at `http://localhost:8888/v1`, model `default`.
+    Create an API key in Studio (Settings → API).
+  - **LM Studio** or a **llama.cpp server:** any OpenAI-compatible endpoint.
+  - **None:** keyword search only. This still works well for register names and addresses.
+- If a library is set to Ollama but Ollama isn't running and nothing has been embedded yet, RetroRAG switches
+  that library to the built-in model automatically, rather than quietly falling back to keyword-only search.
+
+Benchmark on a laptop CPU: 317 chunks, and 10 plainly-worded questions such as "read the fire button on a
+game controller":
+
+| Model | Indexing speed | Right document first | Query time |
+|---|---|---|---|
+| Built-in nomic-embed-text (default) | 11.6 chunks/s | 9 of 10 | 22 ms |
+| Built-in bge-small | 37 chunks/s | 6 of 10 | 5 ms |
+| Ollama nomic-embed-text (CPU) | 6.6 chunks/s | 9 of 10 | 262 ms |
+
+**Indexing speed.** Embedding is nearly all of the indexing time. Chunking and keyword indexing take a
+fraction of a second, even for a 300-page manual.
+- **Re-indexing after edits is quick.** Unchanged chunks keep their embeddings, so saving a proofreading fix
+  re-embeds only the chunk you changed: about 0.6 s instead of re-embedding the whole manual.
+- **Source code is keyword-only by default.** That suits identifiers and keeps big emulator trees fast. Turn
+  on *Embed source code* in Settings → Embeddings if you want semantic search over code.
+- **Progress** shows chunks/s and the time remaining. For a much faster first index of a huge library, point
+  the embeddings at a GPU machine (its Ollama or Unsloth Studio).
 
 The model used for indexing must also be available wherever queries are answered, because RetroRAG embeds
-the query too. Changing the model re-embeds everything on the next build.
+the question too. The built-in model makes that easy, since it travels with the app. Changing the model
+re-embeds everything on the next build.
 
 ---
 
