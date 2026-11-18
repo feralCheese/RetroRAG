@@ -138,6 +138,28 @@ def embed_missing(lib: Library, progress=None, cancel=None, log: Log = print) ->
     return done
 
 
+def _convert_raw_rtf(lib: Library, log: Log) -> None:
+    """RTF, Word and Excel files added before those formats were supported were indexed as raw RTF codes or as
+    binary 'info cards': convert them to readable text now."""
+    from .ingest import extract
+    from .officedocs import OFFICE_EXT
+    exts = sorted({".rtf"} | OFFICE_EXT)
+    q = ",".join("?" * len(exts))
+    old = lib.documents(where=f"lower(ext) IN ({q}) AND (text_path=path OR kind='binary')", params=exts)
+    done = 0
+    for d in old:
+        try:
+            if d.kind != "text":
+                lib.update_document(d.id, kind="text")
+                d = lib.document(d.id)
+            extract(lib, d, log=log)
+            done += 1
+        except Exception as e:
+            log(f"Could not convert {d.title}: {e}")
+    if done:
+        log(f"Converted {done} RTF / Word / Excel document(s) to readable text.")
+
+
 def _maybe_switch_to_builtin(lib: Library, log: Log) -> None:
     """A library set to Ollama on a PC without Ollama, with nothing embedded yet: use the built-in model instead
     of silently falling back to keyword-only search."""
@@ -161,6 +183,7 @@ def build_index(lib: Library, doc_ids: list[int] | None = None, *, rebuild_all: 
         lib.settings.save(lib.root)
         log(f"Embedding model set to the built-in {lib.settings.embed_model}.")
     _maybe_switch_to_builtin(lib, log)
+    _convert_raw_rtf(lib, log)
     sig = lib.settings.embed_signature()
     old_sig = lib.get_meta("embed_signature", "")
     c = lib.conn()

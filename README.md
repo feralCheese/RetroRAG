@@ -6,7 +6,7 @@ and other AI systems (including locally hosted ones such as Unsloth Studio, Olla
 - Organise by **system** (C64, Amiga 500, ZX Spectrum, NES…) and **category**: user guides, programming reference,
   schematics, pinouts, chip datasheets, service & repair, books & magazines, emulator source, firmware & ROMs,
   disk & tape images.
-- Add **PDF, GIF, JPG, PNG, TIFF, BMP, TXT, MD, HTML, source code, ROMs, disk/tape images, ZIPs**, or whole folders
+- Add **PDF, GIF, JPG, PNG, TIFF, BMP, TXT, MD, HTML, RTF, Word (DOC/DOCX), Excel (XLS/XLSX), source code, ROMs, disk/tape images, ZIPs**, or whole folders
   (e.g. an emulator's source tree). Drag & drop onto a system or category.
 - **OCR** (Tesseract) turns scans into editable Markdown. Words below a confidence threshold are marked
   `{?w0rd|42?}` so you can find and fix them.

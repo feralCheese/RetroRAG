@@ -92,6 +92,30 @@ def html_to_text(src: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", src).strip() + "\n"
 
 
+def rtf_to_markdown(data: bytes) -> str:
+    """Rich Text Format -> plain Markdown text. Uses the document's own code page (\\ansicpgNNNN), turns RTF
+    tables into Markdown tables and drops embedded pictures and formatting codes."""
+    from striprtf.striprtf import rtf_to_text
+    raw = data.decode("latin-1")             # RTF is 7/8-bit text; escapes carry the real characters
+    m = re.search(r"\\ansicpg(\d+)", raw[:4000])
+    enc = f"cp{m.group(1)}" if m else "cp1252"
+    try:
+        "".encode(enc)
+    except LookupError:
+        enc = "cp1252"
+    text = rtf_to_text(raw, encoding=enc, errors="replace")
+    out = []
+    for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        s = line.rstrip()
+        if s.endswith("|") and s.count("|") >= 2:          # a table row: cell|cell|cell|
+            cells = [c.strip() for c in s[:-1].split("|")]
+            s = "| " + " | ".join(cells) + " |"
+        out.append(s)
+    md = "\n".join(out)
+    md = re.sub(r"\n{3,}", "\n\n", md).strip()
+    return md + "\n"
+
+
 # ---------------------------------------------------------------- retro-friendly keyword normalisation
 # Hex addresses are written many ways: $D020, 0xD020, D020h, &D020, D020H.  The FTS tokenizer drops '$'/'&'
 # but keeps '0x' and 'h', so we add a normalised form ('d020') of every hex literal to a keywords column

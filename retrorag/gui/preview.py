@@ -179,7 +179,11 @@ class PreviewPane(QWidget):
             if not note and not has_processed(d):
                 note = "No text yet - run OCR to create a processed version."
         else:
-            if mode == "original":           # text / code: the file itself
+            converted = d.kind == "text" and d.text_path and d.text_path != d.path    # RTF / HTML
+            if mode == "original" and converted:
+                path, key = self.lib.abspath(d.text_path), (d.id, "converted", d.text_updated)
+                note = f"Converted from {d.ext.lstrip('.').upper()} - open the original file to see its formatting."
+            elif mode == "original":           # text / code: the file itself
                 path, key = self.lib.abspath(d.path), (d.id, "original", None)
             else:
                 path, key = self.lib.abspath(d.text_path), (d.id, "processed", d.text_updated)

@@ -9,11 +9,14 @@ from typing import Callable, Iterable
 
 from . import binaries
 from .library import Document, Library, System, now_iso, safe_filename, slugify
-from .textutil import html_to_text, looks_binary, page_marker, read_text_file
+from .textutil import html_to_text, looks_binary, page_marker, read_text_file, rtf_to_markdown
 
 TEXT_EXT = {".txt", ".md", ".markdown", ".rst", ".asc", ".ascii", ".nfo", ".diz", ".doc.txt", ".csv", ".tsv",
             ".json", ".xml", ".ini", ".cfg", ".conf", ".yaml", ".yml", ".tex", ".1st", ".me", ".readme", ".faq"}
 HTML_EXT = {".htm", ".html", ".xhtml"}
+RTF_EXT = {".rtf"}
+from .officedocs import OFFICE_EXT, office_to_markdown  # noqa: E402  (Word / Excel, pure Python)
+CONVERTED_EXT = HTML_EXT | RTF_EXT | OFFICE_EXT  # formats with markup/binary layout: indexed via a converted .md
 CODE_EXT = {".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".hh", ".hxx", ".inl", ".ipp", ".m", ".mm",
             ".asm", ".s", ".a65", ".a80", ".z80asm", ".68k", ".x68", ".i", ".inc", ".mac", ".src", ".lst", ".sym",
             ".bas", ".bbc", ".pas", ".p", ".for", ".f", ".f77", ".ada", ".adb", ".ads", ".lisp", ".lsp", ".fth", ".4th",
@@ -41,6 +44,8 @@ def classify(p: Path) -> str:
         return "pdf"
     if ext in IMAGE_EXT:
         return "image"
+    if ext in RTF_EXT or ext in OFFICE_EXT:
+        return "text"
     if ext in HTML_EXT or ext in TEXT_EXT:
         return "text" if not _sniff_binary(p) else "binary"
     if ext in CODE_EXT or name in CODE_NAMES:
@@ -358,11 +363,17 @@ def extract(lib: Library, d: Document, log: Callable[[str], None] = print) -> No
     src = lib.abspath(d.path)
     s = lib.system(d.system_id)
     upd: dict = {"text_updated": now_iso()}
-    if d.kind == "code" or (d.kind == "text" and d.ext not in HTML_EXT):
+    if d.kind == "code" or (d.kind == "text" and d.ext not in CONVERTED_EXT):
         upd.update(text_path=d.path, text_status="extracted", needs_ocr=0)
-    elif d.kind == "text":   # html
+    elif d.kind == "text":   # html / rtf: convert to readable markdown (editable copy next to the original)
         md = lib.derived_md_path(d)
-        md.write_text(html_to_text(read_text_file(src)), "utf-8")
+        if d.ext in RTF_EXT:
+            body = rtf_to_markdown(src.read_bytes())
+            md.write_text(f"# {d.title}\n\n" + body, "utf-8")
+        elif d.ext in OFFICE_EXT:
+            md.write_text(f"# {d.title}\n\n" + office_to_markdown(src), "utf-8")
+        else:
+            md.write_text(html_to_text(read_text_file(src)), "utf-8")
         upd.update(text_path=lib.relpath(md), text_status="extracted", needs_ocr=0)
     elif d.kind == "pdf":
         upd.update(_extract_pdf(lib, d, src))
