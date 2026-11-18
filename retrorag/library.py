@@ -34,7 +34,8 @@ CREATE TABLE IF NOT EXISTS systems (
     cpu TEXT DEFAULT '',
     aliases TEXT DEFAULT '',
     notes TEXT DEFAULT '',
-    created TEXT
+    created TEXT,
+    parent_id INTEGER REFERENCES systems(id) ON DELETE SET NULL   -- this system is a variant of parent_id
 );
 
 CREATE TABLE IF NOT EXISTS documents (
@@ -143,6 +144,7 @@ class System:
     aliases: str = ""
     notes: str = ""
     created: str = ""
+    parent_id: int | None = None      # variant of this system (None = top-level / family)
 
 
 @dataclass
@@ -195,6 +197,9 @@ class Library:
         with self.conn() as c:
             c.executescript(SCHEMA)
             c.execute("INSERT OR IGNORE INTO meta(key,value) VALUES('schema_version',?)", (str(SCHEMA_VERSION),))
+            cols = {r["name"] for r in c.execute("PRAGMA table_info(systems)")}
+            if "parent_id" not in cols:   # libraries made before variants existed
+                c.execute("ALTER TABLE systems ADD COLUMN parent_id INTEGER REFERENCES systems(id) ON DELETE SET NULL")
 
     # ------------------------------------------------------------------ plumbing
     def conn(self) -> sqlite3.Connection:
@@ -268,6 +273,69 @@ class Library:
     def system_dir(self, s: System) -> Path:
         return self.root / "systems" / s.slug
 
+    # ------------------------------------------------------------------ variants (system families)
+    def children(self, system_id: int) -> list[System]:
+        return [s for s in self.systems() if s.parent_id == system_id]
+
+    def ancestors(self, system_id: int) -> list[System]:
+        """Parent, grandparent, ... (nearest first)."""
+        out, seen = [], {system_id}
+        s = self.system(system_id)
+        while s and s.parent_id and s.parent_id not in seen:
+            seen.add(s.parent_id)
+            s = self.system(s.parent_id)
+            if s:
+                out.append(s)
+        return out
+
+    def descendants(self, system_id: int) -> list[System]:
+        by_parent: dict = {}
+        for s in self.systems():
+            by_parent.setdefault(s.parent_id, []).append(s)
+        out, todo, seen = [], [system_id], {system_id}
+        while todo:
+            for ch in by_parent.get(todo.pop(), []):
+                if ch.id not in seen:
+                    seen.add(ch.id)
+                    out.append(ch)
+                    todo.append(ch.id)
+        return out
+
+    def system_scope(self, system_id: int) -> list[int]:
+        """Systems whose documents apply when working with this one: itself, its variants, and the families it
+        belongs to (their documents are common to all variants)."""
+        return [system_id] + [s.id for s in self.ancestors(system_id)] + [s.id for s in self.descendants(system_id)]
+
+    def family_label(self, s: System) -> str:
+        """'ZX Spectrum 128K (variant of ZX Spectrum)' style description for headers and the AI."""
+        anc = self.ancestors(s.id)
+        kids = self.children(s.id)
+        parts = []
+        if anc:
+            parts.append("variant of " + " > ".join(a.name for a in reversed(anc)))
+        if kids:
+            parts.append("documents here apply to all its variants: " + ", ".join(k.name for k in kids))
+        return f"{s.name} ({'; '.join(parts)})" if parts else s.name
+
+    def _touch_family(self, system_id: int) -> None:
+        """Document headers mention the family / variants: re-index the whole family after a change."""
+        root = ([a.id for a in self.ancestors(system_id)] or [system_id])[-1]
+        ids = [root] + [s.id for s in self.descendants(root)]
+        with self.conn() as c:
+            c.execute(f"UPDATE documents SET text_updated=? WHERE system_id IN ({','.join('?' * len(ids))})",
+                      [now_iso(), *ids])
+
+    def set_parent(self, system_id: int, parent_id: int | None) -> None:
+        if parent_id is not None and (parent_id == system_id or
+                                      parent_id in {s.id for s in self.descendants(system_id)}):
+            raise ValueError("A system can't be a variant of itself or of one of its own variants.")
+        old = self.system(system_id)
+        with self.conn() as c:
+            c.execute("UPDATE systems SET parent_id=? WHERE id=?", (parent_id, system_id))
+        if old and old.parent_id:
+            self._touch_family(old.parent_id)
+        self._touch_family(system_id)
+
     def add_system(self, name: str, **kw: Any) -> System:
         base = slugify(name)
         slug, n = base, 2
@@ -283,9 +351,16 @@ class Library:
             sid = cur.lastrowid
         s = self.system(sid)
         self.system_dir(s).mkdir(parents=True, exist_ok=True)
+        if kw.get("parent_id"):
+            self.set_parent(sid, int(kw["parent_id"]))
+            s = self.system(sid)
         return s
 
     def update_system(self, system_id: int, **kw: Any) -> None:
+        if "parent_id" in kw:
+            cur = self.system(system_id)
+            if cur and cur.parent_id != kw["parent_id"]:
+                self.set_parent(system_id, kw["parent_id"])
         allowed = {"name", "manufacturer", "year", "kind", "cpu", "aliases", "notes"}
         sets = {k: v for k, v in kw.items() if k in allowed}
         if not sets:
@@ -293,8 +368,7 @@ class Library:
         with self.conn() as c:
             c.execute(f"UPDATE systems SET {', '.join(f'{k}=?' for k in sets)} WHERE id=?", [*sets.values(), system_id])
         # header chunks mention the system name -> mark docs stale
-        with self.conn() as c:
-            c.execute("UPDATE documents SET text_updated=? WHERE system_id=?", (now_iso(), system_id))
+        self._touch_family(system_id)
 
     def delete_system(self, system_id: int, delete_files: bool = False) -> str:
         """Remove a system and all its documents/chunks from the library.
@@ -312,7 +386,11 @@ class Library:
         if not delete_files:
             from .ingest import write_manifest
             write_manifest(self, s)
+        if s.parent_id:
+            self._touch_family(s.parent_id)
         with self.conn() as c:
+            # its variants move up a level (to this system's own family, or top level)
+            c.execute("UPDATE systems SET parent_id=? WHERE parent_id=?", (s.parent_id, system_id))
             c.execute("DELETE FROM systems WHERE id=?", (system_id,))
         self.bump_index_version()
         if delete_files:
@@ -359,6 +437,68 @@ class Library:
 
     def touch_text(self, doc_id: int) -> None:
         self.update_document(doc_id, text_updated=now_iso())
+
+    # ------------------------------------------------------------------ moving documents
+    def move_documents(self, doc_ids: list[int], system_id: int, category: str | None = None,
+                       log=print) -> int:
+        """Move documents to another system (and/or category). Files move on disk together with their OCR text,
+        corrections and word boxes; links to other documents are kept (they refer to document ids)."""
+        import shutil
+        from .ingest import _unique_dest
+        target = self.system(system_id)
+        if not target:
+            raise ValueError("No such system")
+        moved = 0
+        for did in doc_ids:
+            d = self.document(did)
+            if not d:
+                continue
+            cat = category or d.category
+            if d.system_id == system_id and cat == d.category:
+                continue
+            old_md, old_js = self.derived_md_path(d), self.ocr_json_path(d)
+            upd = {"system_id": system_id, "category": cat, "text_updated": now_iso()}
+            if Path(d.path).is_absolute():              # linked in place: the original stays where it is
+                new_dir = self.system_dir(target) / "_derived" / slugify(cat) / d.group_path
+                new_name = Path(d.path).name
+            else:
+                src = self.abspath(d.path)
+                new_dir = self.system_dir(target) / slugify(cat) / d.group_path
+                new_dir.mkdir(parents=True, exist_ok=True)
+                dest = _unique_dest(new_dir / src.name)
+                if src.exists():
+                    shutil.move(str(src), dest)
+                upd["path"] = self.relpath(dest)
+                new_name = dest.name
+            new_dir.mkdir(parents=True, exist_ok=True)
+            for old, suffix, key in ((old_md, ".md", "md"), (old_js, ".ocr.json", "js")):
+                if old.exists() and old.resolve() != self.abspath(d.path).resolve():
+                    new = new_dir / (new_name + suffix)
+                    shutil.move(str(old), new)
+                    if key == "md" and d.text_path and self.abspath(d.text_path).resolve() == old.resolve():
+                        upd["text_path"] = self.relpath(new)
+            if d.text_path == d.path and "path" in upd:      # text and code: the original *is* the text
+                upd["text_path"] = upd["path"]
+            self.update_document(did, **upd)
+            self._prune_empty_dirs(self.abspath(d.path).parent)
+            moved += 1
+        if moved:
+            self.bump_index_version()
+            log(f"Moved {moved} document(s) to {target.name}" + (f" / {category}" if category else ""))
+        return moved
+
+    def _prune_empty_dirs(self, folder: Path) -> None:
+        """Remove folders left empty by a move, up to (not including) the system folder."""
+        stop = self.root / "systems"
+        try:
+            folder = folder.resolve()
+            while stop in folder.parents and folder.parent != stop:
+                if any(folder.iterdir()):
+                    break
+                folder.rmdir()
+                folder = folder.parent
+        except OSError:
+            pass
 
     def delete_document(self, doc_id: int, delete_files: bool = False) -> None:
         d = self.document(doc_id)

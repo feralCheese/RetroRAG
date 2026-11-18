@@ -85,12 +85,15 @@ class DocPanel(QWidget):
         f.setHorizontalSpacing(12)
         f.setVerticalSpacing(8)
         self.title = QLineEdit()
+        self.system_box = QComboBox()
+        self.system_box.setToolTip("Change this (and Save) to move the document to another system or variant")
         self.category = QComboBox(); self.category.setEditable(True); self.category.addItems(CATEGORIES)
         self.tags = QLineEdit(); self.tags.setPlaceholderText("comma separated, e.g. VIC-II, raster, sprites")
         self.source = QLineEdit(); self.source.setPlaceholderText("where it came from (URL, book, archive)")
         self.notes = QPlainTextEdit(); self.notes.setFixedHeight(76)
         self.notes.setPlaceholderText("Notes are indexed too - e.g. 'Rev B board, PAL', 'errata on p.12'")
-        f.addRow("Title", self.title); f.addRow("Category", self.category); f.addRow("Tags", self.tags)
+        f.addRow("Title", self.title); f.addRow("System", self.system_box); f.addRow("Category", self.category)
+        f.addRow("Tags", self.tags)
         f.addRow("Source", self.source); f.addRow("Notes", self.notes)
         self.save_btn = QPushButton("Save details")
         self.save_btn.setObjectName("primary")
@@ -179,6 +182,17 @@ class DocPanel(QWidget):
         self._set_form_enabled(False)
         self.apply_icons()
 
+    def refresh_systems(self):
+        from .dialogs import system_choices
+        cur = self.system_box.currentData()
+        self.system_box.blockSignals(True)
+        self.system_box.clear()
+        for label, sid in system_choices(self.lib):
+            self.system_box.addItem(label, sid)
+        want = self.doc.system_id if self.doc else cur
+        self.system_box.setCurrentIndex(max(0, self.system_box.findData(want)))
+        self.system_box.blockSignals(False)
+
     def apply_icons(self):
         for key, b in self.buttons.items():
             b.setIcon(theme.icon(self._button_icons[key], theme.T["danger"] if key == "remove" else None))
@@ -248,7 +262,7 @@ class DocPanel(QWidget):
             self.links_changed.emit()
 
     def _set_form_enabled(self, on: bool):
-        for w in (self.title, self.category, self.tags, self.source, self.notes, self.save_btn, self.more_btn,
+        for w in (self.title, self.system_box, self.category, self.tags, self.source, self.notes, self.save_btn, self.more_btn,
                   self.rel_add, self.rel_suggest, self.rel_remove, self.rel_list, *self.buttons.values()):
             w.setEnabled(on)
 
@@ -264,11 +278,15 @@ class DocPanel(QWidget):
             self.notes.clear()
             self.info.clear()
             self.rel_list.clear()
+            self.system_box.setCurrentIndex(-1)
             self.callout.hide()
             self.busy.clear()
             self.preview.show_doc(None)
             return
         self.title.setText(d.title); self.category.setCurrentText(d.category)
+        if self.system_box.findData(d.system_id) < 0:
+            self.refresh_systems()
+        self.system_box.setCurrentIndex(max(0, self.system_box.findData(d.system_id)))
         self.tags.setText(d.tags); self.source.setText(d.source_url); self.notes.setPlainText(d.notes)
         self._fill_info(d)
         self._fill_links(d)
@@ -387,10 +405,14 @@ class DocPanel(QWidget):
     def save(self):
         if not self.doc:
             return
+        new_sys = self.system_box.currentData() or self.doc.system_id
+        new_cat = self.category.currentText().strip() or self.doc.category
         self.lib.update_document(self.doc.id, title=self.title.text().strip() or self.doc.title,
-                                 category=self.category.currentText().strip() or self.doc.category,
                                  tags=self.tags.text().strip(), source_url=self.source.text().strip(),
                                  notes=self.notes.toPlainText().strip(), text_updated=now_iso())
+        if new_sys != self.doc.system_id or new_cat != self.doc.category:
+            # files follow: systems/<system>/<category>/...
+            self.lib.move_documents([self.doc.id], new_sys, new_cat, log=lambda m: None)
         d = self.lib.document(self.doc.id)
         if d.kind == "binary":
             from ..ingest import refresh_info_cards
@@ -439,8 +461,10 @@ class SearchPanel(QWidget):
     def refresh_filters(self):
         cur_s, cur_c = self.system.currentText(), self.category.currentText()
         self.system.clear(); self.system.addItem("All systems", None)
-        for s in self.lib.systems():
-            self.system.addItem(s.name, s.name)
+        from .dialogs import system_choices
+        for label, sid in system_choices(self.lib):
+            self.system.addItem(label, self.lib.system(sid).name)
+        self.system.setToolTip("A variant includes the documents common to its family")
         self.category.clear(); self.category.addItem("All categories", None)
         for c in CATEGORIES:
             self.category.addItem(c, c)

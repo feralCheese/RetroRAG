@@ -18,8 +18,29 @@ from ..library import Library, System
 
 
 # =========================================================================== system
+def system_choices(lib: Library, exclude: set | None = None) -> list[tuple[str, int]]:
+    """(indented label, id) for every system in family-tree order, e.g. 'ZX Spectrum', '    ZX Spectrum 128K'."""
+    exclude = exclude or set()
+    systems = lib.systems()
+    ids = {s.id for s in systems}
+    kids: dict = {}
+    for s in systems:
+        kids.setdefault(s.parent_id if s.parent_id in ids else None, []).append(s)
+    out: list[tuple[str, int]] = []
+
+    def walk(parent, depth):
+        for s in kids.get(parent, []):
+            if s.id in exclude:
+                continue
+            out.append(("      " * depth + ("\u2514 " if depth else "") + s.name, s.id))
+            walk(s.id, depth + 1)
+    walk(None, 0)
+    return out
+
+
 class SystemDialog(QDialog):
-    def __init__(self, parent=None, system: System | None = None):
+    def __init__(self, parent=None, system: System | None = None, lib: Library | None = None,
+                 parent_id: int | None = None):
         super().__init__(parent)
         self.setWindowTitle("Edit system" if system else "Add retro system")
         self.setMinimumWidth(460)
@@ -38,6 +59,18 @@ class SystemDialog(QDialog):
         self.notes = QPlainTextEdit(system.notes if system else "")
         self.notes.setFixedHeight(90)
         f.addRow("Name*", self.name)
+        self.parent_sys = QComboBox()
+        self.parent_sys.addItem("(none - a system or family in its own right)", None)
+        if lib is not None:
+            exclude = ({system.id} | {d.id for d in lib.descendants(system.id)}) if system else set()
+            for label, sid in system_choices(lib, exclude):
+                self.parent_sys.addItem(label, sid)
+        want = system.parent_id if system else parent_id
+        self.parent_sys.setCurrentIndex(max(0, self.parent_sys.findData(want)))
+        self.parent_sys.setToolTip("Make this a variant of another system (e.g. ZX Spectrum 128K of ZX Spectrum). "
+                                   "Documents on the family apply to all its variants; each variant keeps its own "
+                                   "extra documents.")
+        f.addRow("Variant of", self.parent_sys)
         f.addRow("Aliases", self.aliases)
         f.addRow("Manufacturer", self.manufacturer)
         f.addRow("Year", self.year)
@@ -56,18 +89,25 @@ class SystemDialog(QDialog):
         self.accept()
 
     def values(self) -> dict:
-        return {"name": self.name.text().strip(), "aliases": self.aliases.text().strip(),
+        return {"name": self.name.text().strip(), "parent_id": self.parent_sys.currentData(),
+                "aliases": self.aliases.text().strip(),
                 "manufacturer": self.manufacturer.text().strip(), "year": self.year.text().strip(),
                 "kind": self.kind.currentText().strip(), "cpu": self.cpu.text().strip(),
                 "notes": self.notes.toPlainText().strip()}
 
 
 class RemoveSystemDialog(QDialog):
-    def __init__(self, parent, system: System, n_docs: int, folder: Path):
+    def __init__(self, parent, system: System, n_docs: int, folder: Path, variants: list | None = None,
+                 parent_name: str | None = None):
         super().__init__(parent)
         self.setWindowTitle(f"Remove {system.name}")
         v = QVBoxLayout(self)
         v.addWidget(QLabel(f"<b>Remove '{system.name}'</b> and its {n_docs} document(s) from the library?"))
+        if variants:
+            vn = QLabel(f"Its variants ({', '.join(variants)}) are kept, with their documents, and become "
+                        + (f"variants of {parent_name}." if parent_name else "systems in their own right."))
+            vn.setWordWrap(True); vn.setObjectName("muted")
+            v.addWidget(vn)
         self.keep = QRadioButton("Keep the files on disk")
         self.keep.setChecked(True)
         keep_note = QLabel(f"Originals, OCR text and your corrections stay in:<br><code>{folder}</code><br>"
@@ -97,6 +137,36 @@ class RemoveSystemDialog(QDialog):
     @property
     def delete_files(self) -> bool:
         return self.delete.isChecked()
+
+
+class MoveDialog(QDialog):
+    """Pick the system (and optionally a new category) to move documents to."""
+
+    def __init__(self, parent, lib: Library, n_docs: int, system_id: int | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("Move documents")
+        self.setMinimumWidth(480)
+        f = QFormLayout(self)
+        f.addRow(QLabel(f"Move <b>{n_docs}</b> document(s). Files move on disk too, with their OCR text, "
+                        "corrections and links."))
+        self.system = QComboBox()
+        for label, sid in system_choices(lib):
+            self.system.addItem(label, sid)
+        if system_id is not None:
+            self.system.setCurrentIndex(max(0, self.system.findData(system_id)))
+        f.addRow("To system", self.system)
+        self.category = QComboBox()
+        self.category.addItem("(keep each document's category)", None)
+        for c in CATEGORIES:
+            self.category.addItem(c, c)
+        f.addRow("Category", self.category)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.button(QDialogButtonBox.Ok).setText("Move")
+        bb.accepted.connect(self.accept); bb.rejected.connect(self.reject)
+        f.addRow(bb)
+
+    def values(self) -> tuple[int, str | None]:
+        return self.system.currentData(), self.category.currentData()
 
 
 # =========================================================================== add files

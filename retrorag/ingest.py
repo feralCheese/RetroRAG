@@ -188,6 +188,8 @@ def write_manifest(lib: Library, s: System) -> Path:
         docs[key] = {k: getattr(d, k) for k in ("title", "category", "tags", "notes", "source_url", "group_path",
                                                  "text_status")}
     meta = {k: getattr(s, k) for k in ("name", "manufacturer", "year", "kind", "cpu", "aliases", "notes")}
+    if s.parent_id and (par := lib.system(s.parent_id)):
+        meta["variant_of"] = par.name
     out = sdir / MANIFEST
     out.write_text(json.dumps({"system": meta, "documents": docs}, indent=1), "utf-8")
     return out

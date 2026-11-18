@@ -35,6 +35,10 @@ def export_markdown(lib: Library, out_dir: Path, system_ids: list[int] | None = 
                   f"source_file: {_yaml(Path(d.path).name)}", f"kind: {d.kind}"]
             if s.aliases:
                 fm.append(f"system_aliases: {_yaml(s.aliases)}")
+            if s.parent_id and (par := lib.system(s.parent_id)):
+                fm.append(f"variant_of: {_yaml(par.name)}")
+            if lib.children(s.id):
+                fm.append(f"applies_to_variants: {_yaml(', '.join(c.name for c in lib.children(s.id)))}")
             if d.pages:
                 fm.append(f"pages: {d.pages}")
             if d.tags:

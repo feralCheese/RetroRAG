@@ -15,7 +15,8 @@ from . import search as S
 INSTRUCTIONS = """RetroRAG is a reference library of documentation for retro computers and consoles: user guides,
 programming references, schematics, pinouts, chip datasheets, service manuals, emulator source code, firmware/ROM
 info cards and disk/tape image listings. Use `search_docs` first (optionally filtered by system or category), then
-`read_document` with a page range to read more around a hit. Hits list `related` documents (pinouts, schematics,
+`read_document` with a page range to read more around a hit. Systems can have variants (e.g. ZX Spectrum ->
+48K, 128K): filtering by a variant also returns the documents common to its whole family. Hits list `related` documents (pinouts, schematics,
 datasheets, the source code implementing a chip, errata, newer revisions) - follow them with `get_related` /
 `read_document` when the question spans several documents. Cite results as 'System / Document, page N'.
 Text from scanned documents is OCR output and may contain recognition errors."""
@@ -35,8 +36,11 @@ def build_server(library: str | Path):
         for s in lib.systems():
             n = lib.conn().execute("SELECT category, COUNT(*) FROM documents WHERE system_id=? GROUP BY category",
                                    (s.id,)).fetchall()
+            parent = lib.system(s.parent_id) if s.parent_id else None
             out.append({"name": s.name, "aliases": s.aliases, "manufacturer": s.manufacturer, "year": s.year,
                         "kind": s.kind, "cpu": s.cpu, "notes": s.notes,
+                        "variant_of": parent.name if parent else None,
+                        "variants": [c.name for c in lib.children(s.id)],
                         "documents_by_category": {r[0]: r[1] for r in n}})
         return out
 
@@ -62,14 +66,15 @@ def build_server(library: str | Path):
     @mcp.tool()
     def list_documents(system: str | None = None, category: str | None = None, limit: int = 200) -> list[dict]:
         """List documents, optionally filtered by system and/or category."""
-        sid = None
+        names = {s.id: s.name for s in lib.systems()}
         if system:
             s = lib.find_system(system)
             if not s:
                 return [{"error": f"No system matching '{system}'"}]
-            sid = s.id
-        names = {s.id: s.name for s in lib.systems()}
-        docs = lib.documents(sid, category)[: max(1, min(limit, 2000))]
+            docs = [d for sid in lib.system_scope(s.id) for d in lib.documents(sid, category)]
+        else:
+            docs = lib.documents(None, category)
+        docs = docs[: max(1, min(limit, 2000))]
         return [{"doc_id": d.id, "title": d.title, "system": names.get(d.system_id), "category": d.category,
                  "kind": d.kind, "pages": d.pages, "file": Path(d.path).name, "folder": d.group_path,
                  "ocr": d.text_status in ("ocr", "reviewed"), "sha1": d.sha1 if d.kind == "binary" else None}

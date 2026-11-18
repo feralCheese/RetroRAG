@@ -19,7 +19,7 @@ def doc_header(lib: Library, d: Document, s: System | None) -> str:
     image or a disk image) can be found by title, system, category, tags or notes."""
     sysname = s.name if s else ""
     lines = [f"Document: {d.title}",
-             f"System: {sysname}" + (f" (also known as {s.aliases})" if s and s.aliases else ""),
+             f"System: {lib.family_label(s) if s else sysname}" + (f" (also known as {s.aliases})" if s and s.aliases else ""),
              f"Category: {d.category}",
              f"File: {Path(d.path).name}" + (f"  (in {d.group_path})" if d.group_path else ""),
              f"Type: {d.kind}" + (f", {d.pages} pages" if d.pages else "")]

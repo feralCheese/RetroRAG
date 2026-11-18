@@ -16,7 +16,7 @@ from ..platform_util import open_path, reveal, tesseract_install_command
 from ..config import APP_NAME, APP_VERSION, CATEGORIES, AppSettings, is_portable, resolve_library_path, store_library_path
 from ..library import Document, Library
 from . import theme
-from .dialogs import AddDialog, ConnectDialog, RemoveSystemDialog, SettingsDialog, SystemDialog
+from .dialogs import AddDialog, ConnectDialog, MoveDialog, RemoveSystemDialog, SettingsDialog, SystemDialog
 from .editor import ProofEditor
 from .panels import DocPanel, SearchPanel
 from .workers import JobRunner
@@ -37,7 +37,9 @@ class LibraryTree(QTreeWidget):
         self.win = win
         self.setHeaderHidden(True)
         self.setAcceptDrops(True)
-        self.setDragDropMode(QTreeWidget.DropOnly)
+        self.setDragEnabled(True)
+        self.setDragDropMode(QTreeWidget.DragDrop)
+        self.setDefaultDropAction(Qt.MoveAction)
         self.setSelectionMode(QTreeWidget.ExtendedSelection)
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.setUniformRowHeights(True)
@@ -50,14 +52,18 @@ class LibraryTree(QTreeWidget):
         h.setSectionResizeMode(1, h.ResizeMode.ResizeToContents)
 
     def dragEnterEvent(self, e):
-        if e.mimeData().hasUrls():
+        if e.mimeData().hasUrls() or e.source() is self:
             e.acceptProposedAction()
 
     def dragMoveEvent(self, e):
-        if e.mimeData().hasUrls():
+        if e.mimeData().hasUrls() or e.source() is self:
             e.acceptProposedAction()
 
     def dropEvent(self, e):
+        if e.source() is self:          # moving documents (or a system) within the library
+            self.win.drop_move(self.itemAt(e.position().toPoint()))
+            e.acceptProposedAction()
+            return
         paths = [Path(u.toLocalFile()) for u in e.mimeData().urls() if u.toLocalFile()]
         it = self.itemAt(e.position().toPoint())
         self.win.add_paths(paths, it)
@@ -367,6 +373,7 @@ class MainWindow(QMainWindow):
         self.search_panel.lib = self.lib
         self.search_panel.refresh_filters()
         self.doc_panel.lib = self.lib
+        self.doc_panel.refresh_systems()
         self.doc_panel.preview.lib = self.lib
         self.doc_panel.refresh_current()
 
@@ -491,17 +498,30 @@ read a drawing.</p>
         self.tree.clear()
         flt = self.filter.text().strip().lower()
         mode = self.filter_kind.currentText()
+        filtering = bool(flt) or mode != "All"
         c = self.lib.conn()
-        for s in self.lib.systems():
+        systems = self.lib.systems()
+        ids = {x.id for x in systems}
+        kids: dict = {}
+        for x in systems:
+            kids.setdefault(x.parent_id if x.parent_id in ids else None, []).append(x)
+
+        def build(s, parent_item) -> bool:
             counts = {r[0]: r[1] for r in c.execute(
                 "SELECT category, COUNT(*) FROM documents WHERE system_id=? GROUP BY category", (s.id,))}
+            variant = parent_item is not None
             si = QTreeWidgetItem([s.name, str(sum(counts.values()))])
             si.setData(0, ROLE, ("system", s.id))
-            si.setIcon(0, theme.icon("system", theme.T["accent"]))
+            si.setIcon(0, theme.icon("system", theme.T["muted"] if variant else theme.T["accent"]))
             si.setForeground(1, QColor(theme.T["muted"]))
-            f = si.font(0); f.setBold(True); si.setFont(0, f)
-            si.setToolTip(0, ", ".join(x for x in (s.manufacturer, s.year, s.cpu, s.aliases) if x))
-            self.tree.addTopLevelItem(si)
+            f = si.font(0); f.setBold(not variant); si.setFont(0, f)
+            info = ", ".join(x for x in (s.manufacturer, s.year, s.cpu, s.aliases) if x)
+            if kids.get(s.id):
+                info += ("\n" if info else "") + "Documents here apply to all its variants"
+            if variant:
+                info += ("\n" if info else "") + f"Variant of {parent_item.text(0)}"
+            si.setToolTip(0, info)
+            (parent_item.addChild(si) if parent_item else self.tree.addTopLevelItem(si))
             cats = [cat for cat in CATEGORIES if cat in counts] + sorted(set(counts) - set(CATEGORIES))
             for cat in cats:
                 ci = QTreeWidgetItem([cat, str(counts[cat])])
@@ -509,7 +529,7 @@ read a drawing.</p>
                 ci.setIcon(0, theme.icon("folder", theme.T["accent"]))
                 ci.setForeground(1, QColor(theme.T["muted"]))
                 si.addChild(ci)
-                if flt or mode != "All":
+                if filtering:
                     self._populate_category(ci, flt, mode)
                     if ci.childCount() == 0:
                         si.removeChild(ci)
@@ -517,14 +537,22 @@ read a drawing.</p>
                         ci.setExpanded(True)
                 else:
                     ci.addChild(QTreeWidgetItem(["…"]))   # lazy placeholder
-            if (flt or mode != "All") and si.childCount() == 0:
-                self.tree.takeTopLevelItem(self.tree.indexOfTopLevelItem(si))
-                continue
-            if (flt or mode != "All") or ("system", s.id) in expanded:
+            for ch in kids.get(s.id, []):
+                build(ch, si)
+            if filtering and si.childCount() == 0:
+                if parent_item:
+                    parent_item.removeChild(si)
+                else:
+                    self.tree.takeTopLevelItem(self.tree.indexOfTopLevelItem(si))
+                return False
+            if filtering or ("system", s.id) in expanded:
                 si.setExpanded(True)
+            return True
+
+        for top in kids.get(None, []):
+            build(top, None)
         # restore expansions
-        it = self._iter_items()
-        for item in it:
+        for item in self._iter_items():
             key = item.data(0, ROLE)
             if key and key in expanded and not item.isExpanded():
                 item.setExpanded(True)
@@ -679,6 +707,8 @@ read a drawing.</p>
             m.addAction("Add files…", self.add_files_dialog)
             m.addAction("Add folder…", self.add_folder_dialog)
             m.addAction("Edit system…", self.edit_system)
+            m.addAction("Add variant…", lambda: self.add_system(parent_id=key[1]))
+            m.addAction("Move all its documents to…", self.move_selected_dialog)
             m.addSeparator()
             m.addAction("OCR everything that needs it", lambda: self.ocr_docs(
                 [d.id for d in self.lib.documents(key[1], where="needs_ocr=1")]))
@@ -696,12 +726,13 @@ read a drawing.</p>
             if key[0] == "doc":
                 m.addAction("Show in folder", lambda: self.doc_action("show_folder", key[1]))
             m.addSeparator()
+            m.addAction("Move to system…", self.move_selected_dialog)
             m.addAction("Remove…", self.remove_selected_docs)
         m.exec(self.tree.viewport().mapToGlobal(pos))
 
     # ================================================================== systems
-    def add_system(self):
-        dlg = SystemDialog(self)
+    def add_system(self, parent_id: int | None = None):
+        dlg = SystemDialog(self, None, self.lib, parent_id)
         if not dlg.exec():
             return
         v = dlg.values()
@@ -724,9 +755,12 @@ read a drawing.</p>
         s = self.current_system()
         if not s:
             return
-        dlg = SystemDialog(self, s)
+        dlg = SystemDialog(self, s, self.lib)
         if dlg.exec():
-            self.lib.update_system(s.id, **dlg.values())
+            try:
+                self.lib.update_system(s.id, **dlg.values())
+            except ValueError as e:
+                QMessageBox.warning(self, "Edit system", str(e))
             self.refresh_all()
             self.schedule_index()
 
@@ -736,7 +770,9 @@ read a drawing.</p>
             QMessageBox.information(self, "Remove system", "Select a system in the library tree first.")
             return
         n = len(self.lib.documents(s.id))
-        dlg = RemoveSystemDialog(self, s, n, self.lib.system_dir(s))
+        par = self.lib.system(s.parent_id) if s.parent_id else None
+        dlg = RemoveSystemDialog(self, s, n, self.lib.system_dir(s), [c.name for c in self.lib.children(s.id)],
+                                 par.name if par else None)
         if not dlg.exec():
             return
         for did in [d.id for d in self.lib.documents(s.id)]:
@@ -756,7 +792,10 @@ read a drawing.</p>
         name, ok = QInputDialog.getText(self, "Import system folder", "System name:", text=name)
         if not ok or not name.strip():
             return
-        s = self.lib.find_system(name) or self.lib.add_system(name.strip(), **{k: v for k, v in man.items() if k != "name"})
+        fam = self.lib.find_system(man.get("variant_of", "")) if man.get("variant_of") else None
+        s = self.lib.find_system(name) or self.lib.add_system(
+            name.strip(), parent_id=fam.id if fam else None,
+            **{k: v for k, v in man.items() if k not in ("name", "variant_of")})
         self._run_import(s, folder)
 
     def _run_import(self, s, folder: Path):
@@ -772,6 +811,64 @@ read a drawing.</p>
                 == QMessageBox.Yes:
             self.jobs.submit("Copy linked files", lambda ctx: ingest.consolidate_linked(self.lib, ctx.log),
                              on_done=lambda n: self.refresh_all())
+
+    # ================================================================== moving documents
+    def move_selected_dialog(self):
+        ids = self.selected_doc_ids()
+        if not ids:
+            QMessageBox.information(self, "Move documents", "Select documents (or a category / folder) first.")
+            return
+        cur = self.current_system()
+        dlg = MoveDialog(self, self.lib, len(ids), cur.id if cur else None)
+        if dlg.exec():
+            sid, cat = dlg.values()
+            self.move_docs(ids, sid, cat)
+
+    def drop_move(self, target):
+        """Documents dragged onto a system / category in the tree (or a system onto another system)."""
+        key = target.data(0, ROLE) if target else None
+        if not key:
+            return
+        dragged = [it.data(0, ROLE) for it in self.tree.selectedItems() if it.data(0, ROLE)]
+        if len(dragged) == 1 and dragged[0][0] == "system" and key[0] == "system" and dragged[0][1] != key[1]:
+            child, fam = self.lib.system(dragged[0][1]), self.lib.system(key[1])
+            if QMessageBox.question(self, "Make variant", f"Make '{child.name}' a variant of '{fam.name}'?\n\n"
+                                    f"{fam.name}'s documents will then also apply to {child.name}.") == QMessageBox.Yes:
+                try:
+                    self.lib.set_parent(child.id, fam.id)
+                except ValueError as e:
+                    QMessageBox.warning(self, "Make variant", str(e))
+                self.refresh_all()
+                self.schedule_index()
+            return
+        if key[0] == "doc":
+            d = self.lib.document(key[1])
+            sid, cat = d.system_id, d.category
+        else:
+            sid, cat = key[1], (key[2] if key[0] in ("category", "folder") else None)
+        ids = [i for i in self.selected_doc_ids()
+               if (d := self.lib.document(i)) and (d.system_id != sid or (cat and d.category != cat))]
+        if not ids:
+            return
+        target_name = self.lib.system(sid).name + (f" / {cat}" if cat else "")
+        if QMessageBox.question(self, "Move documents", f"Move {len(ids)} document(s) to {target_name}?\n\n"
+                                "Files move on disk too, with their OCR text, corrections and links.") == QMessageBox.Yes:
+            self.move_docs(ids, sid, cat)
+
+    def move_docs(self, ids: list[int], system_id: int, category: str | None):
+        for i in ids:
+            if not self._close_editor(i):
+                return
+        sname = self.lib.system(system_id).name
+
+        def job(ctx):
+            return self.lib.move_documents(ids, system_id, category, log=ctx.log)
+
+        def done(n):
+            self.refresh_all()
+            self.statusBar().showMessage(f"Moved {n} document(s) to {sname}" + (f" / {category}" if category else ""), 6000)
+            self.schedule_index()
+        self.jobs.submit(f"Move {len(ids)} document(s)", job, on_done=done, doc_ids=ids, verb=f"Moving to {sname}")
 
     # ================================================================== adding
     def _ensure_system(self):

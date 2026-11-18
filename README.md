@@ -67,6 +67,10 @@ Windows 11-style light and dark themes using the Segoe Fluent icon set. *View �
 2. **Add files / Add folder** (or drag & drop). Choose the category. *Copy into library* (the default) keeps the
    library self-contained. For folders you can choose which file types to include; for emulator source the
    default is text and code only.
+   - **Variants:** a system can be a variant of another (*Variant of* in the system dialog, *Add variant…* on a system's right-click menu, or drag one system onto another). Put shared documentation on the family (e.g. *ZX Spectrum*) and only the extra material on each variant (*48K*, *128K*, *+3*). Variants can nest, e.g. *ZX Spectrum → 128K → +3*.
+     - **Searching a variant** (in Search test or by the AI) returns its own documents plus everything common from its family. Searching the family returns all of them.
+     - **Removing a family** keeps its variants; they move up a level.
+   - **Moving a misfiled document:** right-click → *Move to system…*, drag it onto another system or category in the tree, or change **System** on the Document tab and click *Save details*. The file moves on disk together with its OCR text, corrections and links.
 3. **🔤 Run OCR** on scanned PDFs and images. PDFs with a text layer are extracted directly; only pages without
    text are OCR'd, and *Force OCR* re-does every page.
 4. **Proofread** (double-click a document):

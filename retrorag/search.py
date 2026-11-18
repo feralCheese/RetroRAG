@@ -101,7 +101,8 @@ def _filters(lib: Library, system: str | None, category: str | None, kinds: list
     where, params = [], []
     if system:
         s = lib.find_system(system)
-        where.append("d.system_id=?"); params.append(s.id if s else -1)
+        ids = lib.system_scope(s.id) if s else [-1]
+        where.append(f"d.system_id IN ({','.join('?' * len(ids))})"); params += ids
     if category:
         where.append("d.category LIKE ?"); params.append(category)
     if kinds:
