@@ -1652,6 +1652,7 @@ read a drawing.</p>
         self.doc_panel.show_doc(None)
         self.refresh_all()
         self.log(f"Opened library {path}")
+        self._index_leftovers()
 
     # ================================================================== export
     def export_markdown(self):
@@ -1671,6 +1672,12 @@ read a drawing.</p>
     def _first_run_checks(self):
         if not self.lib.systems():
             self.log("Welcome! Start by adding a retro system (➕ System), then add documents.")
+        self._index_leftovers()
+
+    def _index_leftovers(self):
+        """Changes left un-indexed last time (the app was closed before auto-index ran or finished)."""
+        if self.app_settings.auto_index and self.lib.stats()["stale"]:
+            self.schedule_index()
 
     def closeEvent(self, e):
         for did in list(self.editors):

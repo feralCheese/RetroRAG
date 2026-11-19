@@ -41,7 +41,10 @@ def doc_header(lib: Library, d: Document, s: System | None) -> str:
     links = related(lib, d.id)
     if links:
         lines.append("Related documents:\n" + describe(links))
-    if d.needs_ocr and d.text_status in ("none",):
+    from .categorize import PHOTOS
+    if d.kind == "image" and d.category == PHOTOS and d.text_status == "none" and not d.needs_ocr:
+        lines.append(f"(A photo, so there's no text to read: look at it with view_page(doc_id={d.id}).)")
+    elif d.needs_ocr and d.text_status in ("none",):
         lines.append("(Text not yet available - scanned/image document awaiting OCR.)")
     return "\n".join(lines)
 

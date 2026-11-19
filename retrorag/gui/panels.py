@@ -353,7 +353,15 @@ class DocPanel(QWidget):
             self.callout.hide()
             self._set_primary(None)
             return
-        if scan and (d.needs_ocr or no_text):
+        from ..categorize import PHOTOS
+        if d.kind == "image" and d.category == PHOTOS and no_text and not d.needs_ocr:
+            self._set_primary(None)
+            b_ocr.setText("Run OCR")
+            msg, state = ("<b>A photo.</b> Photos aren't OCR'd: an AI that can see pictures looks at it with "
+                          "<b>view_page</b>. To help searches find it, describe what it shows in <b>Notes</b>, "
+                          "such as the board revision, chip markings or jumper settings. If it has writing worth "
+                          "reading, such as a label, <b>Run OCR</b> still works."), "done"
+        elif scan and (d.needs_ocr or no_text):
             self._set_primary("ocr")
             msg = (step(1, 2, "Run OCR") + ("This is a scan with no text yet. " if no_text else
                                             "Some pages are scans without a text layer. ") +
