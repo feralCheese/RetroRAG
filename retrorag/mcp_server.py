@@ -21,6 +21,15 @@ datasheets, the source code implementing a chip, errata, newer revisions) - foll
 `read_document` when the question spans several documents. Cite results as 'System / Document, page N'.
 Text from scanned documents is OCR output and may contain recognition errors.
 
+Peripherals and expansions (disk drives, second processors, accelerator / RAM / IDE boards...) are systems of
+their own, listed with the machines they work with. Searching a machine also searches its peripherals; those hits
+carry `peripheral_for`, and their CPU, OS and memory map are the peripheral's own, not the host's (a 1541 drive's
+6502 is not the C64's 6510). Use include_peripherals=false to search the machine alone.
+"My Notes" documents are the library owner's own first-hand findings - give them weight, and say when an answer
+comes from them. Save a new note with `add_note` only when the user asks you to note something down.
+`list_systems` also gives each system's links (web pages, docs sites, GitHub repositories the owner saved).
+Copied ones are already in the library and searchable. A link with status "gone" is no longer online.
+
 Disk and tape images (D64, D81, ADF, ST, MSA, IMG, SSD, DSD, ADL, TAP, TZX, MDR):
 - An image in the library is given by its doc_id; one the user has uploaded by its `upload` reference.
 - Files the user attached in the chat can NOT be passed to these tools directly. Call `get_upload_link`, give the
@@ -45,23 +54,35 @@ def build_server(library: str | Path):
 
     @mcp.tool()
     def list_systems() -> list[dict]:
-        """List the retro systems in the library with their aliases and document counts."""
+        """List the retro systems in the library: aliases, document counts, variants, the peripherals and
+        expansions that work with each (and, for a peripheral, the machines it works with), and saved links."""
+        from .webcopy import describe_link
         lib.reload_settings()
         out = []
         for s in lib.systems():
             n = lib.conn().execute("SELECT category, COUNT(*) FROM documents WHERE system_id=? GROUP BY category",
                                    (s.id,)).fetchall()
             parent = lib.system(s.parent_id) if s.parent_id else None
-            out.append({"name": s.name, "aliases": s.aliases, "manufacturer": s.manufacturer, "year": s.year,
-                        "kind": s.kind, "cpu": s.cpu, "notes": s.notes,
-                        "variant_of": parent.name if parent else None,
-                        "variants": [c.name for c in lib.children(s.id)],
-                        "documents_by_category": {r[0]: r[1] for r in n}})
+            row = {"name": s.name, "aliases": s.aliases, "manufacturer": s.manufacturer, "year": s.year,
+                   "kind": s.kind, "cpu": s.cpu, "notes": s.notes,
+                   "variant_of": parent.name if parent else None,
+                   "variants": [c.name for c in lib.children(s.id)],
+                   "documents_by_category": {r[0]: r[1] for r in n}}
+            hosts, periph = lib.hosts(s.id), lib.peripherals(s.id)
+            if hosts:
+                row["peripheral_for"] = [h.name for h in hosts]
+            if periph:
+                row["peripherals_and_expansions"] = [p.name for p in periph]
+            links = [describe_link(lib, l) for l in lib.links(s.id)]
+            if links:
+                row["links"] = [{k: v for k, v in l.items() if v not in (None, "", 0) and k not in
+                                 ("link_id", "status_detail", "next_check")} for l in links]
+            out.append(row)
         return out
 
     @mcp.tool()
     def search_docs(query: str, system: str | None = None, category: str | None = None,
-                    limit: int = 8, mode: str = "hybrid") -> list[dict]:
+                    limit: int = 8, mode: str = "hybrid", include_peripherals: bool = True) -> list[dict]:
         """Search the retro documentation library.
 
         Args:
@@ -71,22 +92,26 @@ def build_server(library: str | Path):
                       "User Guides & Manuals", "Emulator Source", "Firmware & ROMs", "Disk & Tape Images".
             limit: number of passages to return (1-30).
             mode: "hybrid" (default), "keyword" (exact terms, good for register names / addresses) or "semantic".
+            include_peripherals: with a system, also search the peripherals and expansions that work with it
+                      (default true; their hits say `peripheral_for`).
         """
         lib.reload_settings()
-        res = S.search(lib, query, k=max(1, min(limit, 30)), system=system, category=category, mode=mode)
-        return [{"citation": r.citation(), "doc_id": r.doc_id, "chunk_id": r.chunk_id, "page": r.page,
-                 "section": r.heading, "category": r.category, "kind": r.kind, "text": r.text,
-                 **({"related": r.related} if r.related else {})} for r in res]
+        res = S.search(lib, query, k=max(1, min(limit, 30)), system=system, category=category, mode=mode,
+                       include_peripherals=include_peripherals)
+        return [r.to_ai() for r in res]
 
     @mcp.tool()
-    def list_documents(system: str | None = None, category: str | None = None, limit: int = 200) -> list[dict]:
-        """List documents, optionally filtered by system and/or category."""
+    def list_documents(system: str | None = None, category: str | None = None, limit: int = 200,
+                       include_peripherals: bool = True) -> list[dict]:
+        """List documents, optionally filtered by system (with its family and, by default, its peripherals and
+        expansions) and/or category - e.g. category "My Notes" for the owner's own notes."""
         names = {s.id: s.name for s in lib.systems()}
         if system:
             s = lib.find_system(system)
             if not s:
                 return [{"error": f"No system matching '{system}'"}]
-            docs = [d for sid in lib.system_scope(s.id) for d in lib.documents(sid, category)]
+            docs = [d for sid in lib.system_scope(s.id, peripherals=include_peripherals)
+                    for d in lib.documents(sid, category)]
         else:
             docs = lib.documents(None, category)
         docs = docs[: max(1, min(limit, 2000))]
@@ -311,6 +336,25 @@ def build_server(library: str | Path):
         img = media_ops.open_doc(lib, d)
         return {"doc_id": doc_id, "title": d.title, "system": s.name, "path_on_retrorag_pc": str(lib.abspath(d.path)),
                 **media_ops.image_info(img)}
+
+    @mcp.tool()
+    def add_note(system: str, title: str, text: str, tags: str = "") -> dict:
+        """Save a note in the library owner's "My Notes" for a system or peripheral - a finding, a fix that worked,
+        settings, a summary of what you worked out together. Only when the user asks you to note or remember
+        something. text: Markdown. tags: comma separated. The note is searchable straight away."""
+        from .notes import AI_SOURCE, add_note as _add
+        s = lib.find_system(system)
+        if not s:
+            return {"error": f"No system matching '{system}' (see list_systems)"}
+        if not (text or "").strip():
+            return {"error": "The note is empty"}
+        try:
+            doc_id = _add(lib, s, title, text, tags=tags, source=AI_SOURCE)
+        except (OSError, ValueError) as e:
+            return _fail(e)
+        _index([doc_id])
+        return {"doc_id": doc_id, "system": s.name, "title": lib.document(doc_id).title,
+                "saved_as": str(lib.abspath(lib.document(doc_id).path))}
 
     @mcp.tool()
     def get_context(chunk_id: int, before: int = 1, after: int = 1) -> str:

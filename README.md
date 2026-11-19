@@ -17,6 +17,14 @@ and other AI systems (including locally hosted ones such as Unsloth Studio, Olla
   (PC/DOS), SSD, DSD and ADL (Acorn DFS/ADFS), TAP and TZX (ZX Spectrum tape) and MDR (Spectrum Microdrive).
   Their directories, BASIC listings and text files are searchable, and an AI can build a new disk with a BASIC
   program on it for you.
+- **Peripherals and expansions** (a 1541 drive, a Tube second processor, an Amiga accelerator) are systems of
+  their own with their own documents, CPU and OS, linked to the machines they work with. Searching a machine
+  includes its peripherals, and the AI is told which is which.
+- **My Notes**: write down your own findings about a system or peripheral. They're searchable, and the AI knows
+  they're yours.
+- **Links**: save web pages, docs sites and GitHub repositories on a system, and copy them into the library so
+  they're searchable offline and survive the site going away. RetroRAG reminds you to re-check them and marks
+  sites that have gone.
 - **Hybrid search**: keyword (BM25, with hex-address normalisation so `$D020`, `0xD020` and `D020h` all match)
   plus semantic (embeddings), merged by rank fusion.
 - **Connect AI**: MCP for Claude Desktop / Claude Code (stdio); MCP over HTTP for Unsloth Studio, LM Studio,
@@ -73,6 +81,7 @@ Windows 11-style light and dark themes using the Segoe Fluent icon set. *View �
    - **Variants:** a system can be a variant of another (*Variant of* in the system dialog, *Add variant…* on a system's right-click menu, or drag one system onto another). Put shared documentation on the family (e.g. *ZX Spectrum*) and only the extra material on each variant (*48K*, *128K*, *+3*). Variants can nest, e.g. *ZX Spectrum → 128K → +3*.
      - **Searching a variant** (in Search test or by the AI) returns its own documents plus everything common from its family. Searching the family returns all of them.
      - **Removing a family** keeps its variants; they move up a level.
+   - **Peripherals and expansions:** see [Peripherals, notes and links](#peripherals-notes-and-links).
    - **Moving a misfiled document:** right-click → *Move to system…*, drag it onto another system or category in the tree, or change **System** on the Document tab and click *Save details*. The file moves on disk together with its OCR text, corrections and links.
 3. **🔤 Run OCR** on scanned PDFs and images. PDFs with a text layer are extracted directly; only pages without
    text are OCR'd, and *Force OCR* re-does every page.
@@ -120,6 +129,64 @@ sidecar holding every word's position on the page, which the editor uses for hig
 
 **Scan cleanup.** *Auto* (the default) OCRs each page as-is. If mean confidence is below 80%, it retries with
 a strong median denoise and keeps the better result. This helps a lot with speckled photocopies.
+
+## Peripherals, notes and links
+
+### Peripherals and expansions
+Disk drives, second processors, accelerator, RAM and IDE boards often have their own documentation, and some their
+own CPU and operating system (the 1541 has a 6502 and CBM DOS; a Tube 6502 second processor has its own copy of the
+OS). In RetroRAG they're systems like any other, with categories, variants (*1541 → 1541-II*), disk formats and
+notes, plus a **Works with** list of the machines they plug into.
+
+- **Adding one**: right-click a machine → *Add peripheral / expansion…*, or tick machines under *Works with* in any
+  system's dialog. Ticking a family (*BBC Micro*) covers all its variants. A peripheral can work with several
+  machines (the 1541 with the C64, VIC-20, C16 and C128).
+- **In the tree** each machine has a *Peripherals & expansions* folder. A peripheral appears under every machine it
+  works with, but its files are stored once. Drag a system onto that folder to attach it, or onto another system
+  and choose *A peripheral / expansion*. Right-click → *Detach from …* undoes it.
+- **Searching a machine includes its peripherals' documents**, and theirs in turn (a RAM board for the drive).
+  Each such hit is labelled `peripheral_for`, and the document header says it's a peripheral with its own hardware,
+  so the AI doesn't mix up the 1541's 6502 with the C64's 6510. Searching the peripheral returns only its own
+  documents. The AI can turn this off with `include_peripherals=false`.
+
+### My Notes
+**Add note** (toolbar, Ctrl+Shift+M, or right-click a system) keeps your own findings: what you tried, what worked,
+settings, part numbers. Notes are Markdown files in the system's *My Notes* category
+(`systems\<system>\my-notes\`), indexed like everything else. The AI is told they're your own first-hand
+findings. Double-click a note to edit it.
+
+If you ask the AI to note something down, it can save a note with `add_note`; those are marked as written by an AI.
+
+### Links and web copies
+**Add link** (toolbar, Ctrl+Shift+L, or right-click a system) saves an address on a system or peripheral, with a
+note. Choose how to keep it:
+
+| Kept as | What happens |
+|---|---|
+| Just save the link | The AI is told about it (in `list_systems`). Good for Claude, which can browse; local AIs can't. |
+| Copy this page | The page is copied into the library (or the PDF / text file the link points straight at). |
+| Copy this page and the pages under it | Pages whose address starts with the same folder on the same site, up to a page limit (100 by default), plus the PDFs and text files they link to on that site. |
+| Copy the GitHub repository | One zip download of a branch, tag or commit, imported like a source tree. A `/tree/<branch>/<folder>` link copies just that folder. |
+
+- **Copies are searchable, work offline and with local AIs, and survive the site disappearing.** Each copied file
+  keeps its address as its source, so citations point back to it.
+- **Polite copying**: one request a second (or the site's *Crawl-delay*), only what the site's `robots.txt`
+  allows, and nothing from other sites. Menus, headers, footers and scripts are dropped; tables and code listings
+  are kept.
+- **Re-copying** updates only what changed. A repository copy mirrors the repository (files it no longer has are
+  removed); a site copy keeps pages the site has since removed.
+- Links appear in the tree under the system's *Links* folder, and in *System → Links…*.
+
+**Re-check reminders.** Each link has *Remind me to re-check*: every month, 3 months, 6 months (the default for
+copies), a year (the default for saved links) or never. The Home page shows **links to re-check**; click it to open
+the Links window, then *Re-check all due*.
+- **A site that's gone** (the page answers 404 / 410, or the repository was deleted) is marked **gone**. Its copy
+  stays in the library, and it no longer counts as due.
+- **A site that can't be reached** (it's down, or this PC is offline) is suggested again the next day. If it's still
+  unreachable on a later try at least 7 days after the first failure, it's marked gone.
+- You can *Mark as gone* or *Mark as working* yourself. Editing a link's address resets it.
+- A page built entirely by JavaScript, or one that needs signing in, can't be copied: RetroRAG says so. Save it from
+  your browser and add the file instead.
 
 ## Disk and tape images
 
@@ -170,8 +237,10 @@ Start the HTTP servers with **▶ Start servers** in the toolbar. You can make t
 | Open WebUI (OpenAPI tools), scripts | REST: `http://127.0.0.1:8765/search?q=...&system=C64`, docs at `/docs`, spec at `/openapi.json` |
 | Anything else / offline | Export → Markdown corpus (YAML front matter per doc) or JSONL chunks |
 
-MCP tools: `search_docs(query, system?, category?, limit, mode)`, `list_systems`, `list_documents`,
-`read_document(doc_id, page_from?, page_to?)`, `get_related(doc_id)`, `get_context(chunk_id)`.
+MCP tools: `search_docs(query, system?, category?, limit, mode, include_peripherals)`, `list_systems` (with each
+system's variants, peripherals and links), `list_documents`, `read_document(doc_id, page_from?, page_to?)`,
+`get_related(doc_id)`, `get_context(chunk_id)`, and `add_note(system, title, text, tags?)` for when you ask the AI
+to note something down.
 
 Disk and tape images:
 
@@ -202,7 +271,7 @@ The links need RetroRAG's servers running (*Start servers*).
 REST has the same: `GET /media/formats`, `GET /documents/{id}/image`, `GET /documents/{id}/image/file?name=…`
 (`&raw=true` downloads the file), `POST /documents/{id}/image/extract`, `POST /uploads` (a new upload link),
 `GET /uploads/{id}`, `GET /uploads/{id}/image?file=…`, `POST /uploads/{id}/extract`, `POST /uploads/{id}/add` and
-`POST /images` (with `add_to_library`).
+`POST /images` (with `add_to_library`). `POST /notes` saves a note.
 
 Each search hit carries a short `related` list (title, relationship, doc id), so the AI can tell the SID
 chapter has a datasheet, a pinout and an emulator implementation, and fetch them only if needed.
@@ -266,6 +335,8 @@ re-embeds everything on the next build.
       user-guides-manuals\c64_users_guide.pdf.ocr.json   OCR word boxes for the editor
       disk-tape-images\demo.d64  +  demo.d64.md          info card
       emulator-source\vice-3.8\src\...
+      my-notes\head alignment.md                         your notes
+      user-guides-manuals\www.c64-wiki.com\wiki\...      copied web pages (original HTML + .md text)
       system.json                manifest written when a system is removed with "keep files"
 ```
 
@@ -280,7 +351,7 @@ re-embeds everything on the next build.
 ### Removing a system
 *System → Remove selected system…* offers:
 - **Keep the files on disk.** Originals, OCR text and your corrections stay in `systems\<name>\`, with a
-  `system.json` manifest of titles, tags, notes and categories. Adding a system with the same name later, or
+  `system.json` manifest of titles, tags, notes, categories, links and the machines a peripheral works with. Adding a system with the same name later, or
   using *File → Import system folder…*, brings everything back, including proofread text.
 - **Delete the files too.** Removes the system's folder. Linked-in-place originals outside the library are
   never deleted.
@@ -304,6 +375,8 @@ retrorag-cli settings                    # show library settings
 retrorag-cli settings api_host=0.0.0.0   # change them (handy on a headless server)
 retrorag-cli image list game.d64         # disk / tape images: formats, list, read, extract, create
 retrorag-cli image create tap demo.tap --basic demo=demo.bas
+retrorag-cli links                       # saved links and web copies; "links due" for the ones to re-check
+retrorag-cli links refresh               # re-copy / re-check the due ones (--all for every link), then index
 ```
 Add `--library <folder>` to any command to use a library other than the last-opened one.
 
@@ -313,9 +386,13 @@ Add `--library <folder>` to any command to use a library other than the last-ope
 - Semantic search loads all vectors into memory. That's fine for hundreds of thousands of chunks. Indexing a
   very large source tree (e.g. all of MAME) is slow to embed, so consider adding just the relevant drivers and
   devices.
-- The servers are read-only apart from disk / tape images: creating them and adding files writes into the library,
-  and uploads and downloads use its `_transfer` folder. The REST API allows any origin (CORS) so browser-based
+- The servers are read-only apart from notes the AI saves when asked, and disk / tape images: creating them and
+  adding files writes into the library, and uploads and downloads use its `_transfer` folder. The REST API allows any origin (CORS) so browser-based
   tools can call it. Keep it on 127.0.0.1 or set an access token.
+- Web copies read the HTML a site sends. Pages drawn by JavaScript in the browser, sites behind a login and
+  other git hosts than GitHub aren't copied (use *Copy this page and the pages under it* for a GitLab or other web
+  view). Copies are for your own reference, like downloading a PDF manual: don't share a library containing them
+  publicly.
 - Disk and tape support covers ordinary sector images. Flux-level and copy-protection formats (G64, IPF, STX, WOZ,
   SCP…) aren't opened, though they still get an info card. Commodore REL files and Spectrum array files can be
   read but not created.

@@ -30,13 +30,23 @@ class Result:
     kind: str
     matched: str = ""   # 'keyword', 'semantic' or 'both'
     related: list = None   # links of the hit's document: [{doc_id, title, relation, note}]
+    peripheral_for: list = None   # the hit is from a peripheral / expansion of these machines
 
     def __post_init__(self):
         if self.related is None:
             self.related = []
+        if self.peripheral_for is None:
+            self.peripheral_for = []
 
     def citation(self) -> str:
         return f"{self.system} / {self.title}" + (f", page {self.page}" if self.page else "")
+
+    def to_ai(self) -> dict:
+        """What the AI gets for a hit (MCP)."""
+        return {"citation": self.citation(), "doc_id": self.doc_id, "chunk_id": self.chunk_id, "page": self.page,
+                "section": self.heading, "category": self.category, "kind": self.kind, "text": self.text,
+                **({"peripheral_for": self.peripheral_for} if self.peripheral_for else {}),
+                **({"related": self.related} if self.related else {})}
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -97,11 +107,12 @@ def _fts_query(q: str) -> str:
     return " OR ".join(f'"{t}"' for t in dict.fromkeys(toks))
 
 
-def _filters(lib: Library, system: str | None, category: str | None, kinds: list[str] | None):
+def _filters(lib: Library, system: str | None, category: str | None, kinds: list[str] | None,
+             peripherals: bool = True):
     where, params = [], []
     if system:
         s = lib.find_system(system)
-        ids = lib.system_scope(s.id) if s else [-1]
+        ids = lib.system_scope(s.id, peripherals=peripherals) if s else [-1]
         where.append(f"d.system_id IN ({','.join('?' * len(ids))})"); params += ids
     if category:
         where.append("d.category LIKE ?"); params.append(category)
@@ -111,9 +122,11 @@ def _filters(lib: Library, system: str | None, category: str | None, kinds: list
 
 
 def search(lib: Library, query: str, k: int = 8, system: str | None = None, category: str | None = None,
-           kinds: list[str] | None = None, mode: str = "hybrid", per_doc: int = 3) -> list[Result]:
-    """mode: hybrid | keyword | semantic"""
-    where, params = _filters(lib, system, category, kinds)
+           kinds: list[str] | None = None, mode: str = "hybrid", per_doc: int = 3,
+           include_peripherals: bool = True) -> list[Result]:
+    """mode: hybrid | keyword | semantic. With a system, include_peripherals also searches the peripherals and
+    expansions that work with it (each such hit says which machines it's a peripheral for)."""
+    where, params = _filters(lib, system, category, kinds, include_peripherals)
     c = lib.conn()
     pool = max(40, k * 6)
     ranked: dict[str, list[int]] = {}
@@ -154,9 +167,15 @@ def search(lib: Library, query: str, k: int = 8, system: str | None = None, cate
 
     results: list[Result] = []
     per: dict[int, int] = {}
+    host_cache: dict[int, list[str]] = {}
+
+    def hosts_of(sid: int) -> list[str]:
+        if sid not in host_cache:
+            host_cache[sid] = [h.name for h in lib.effective_hosts(sid)]
+        return host_cache[sid]
     for cid in order:
         r = c.execute("""SELECT c.id, c.doc_id, c.text, c.page, c.heading, d.title, d.category, d.path, d.kind,
-                                s.name AS sysname FROM chunks c JOIN documents d ON d.id=c.doc_id
+                                s.name AS sysname, d.system_id FROM chunks c JOIN documents d ON d.id=c.doc_id
                                 JOIN systems s ON s.id=d.system_id WHERE c.id=?""", (cid,)).fetchone()
         if not r or per.get(r["doc_id"], 0) >= per_doc:
             continue
@@ -165,6 +184,7 @@ def search(lib: Library, query: str, k: int = 8, system: str | None = None, cate
         results.append(Result(cid, r["doc_id"], round(fused[cid] * 1000, 2), r["text"], r["page"],
                               r["heading"].split(" | ", 1)[-1], r["title"], r["sysname"], r["category"],
                               r["path"], r["kind"], "both" if len(m) > 1 else next(iter(m))))
+        results[-1].peripheral_for = hosts_of(r["system_id"])
         if len(results) >= k:
             break
     if results:

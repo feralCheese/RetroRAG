@@ -12,6 +12,7 @@
     python -m retrorag stats
     python -m retrorag image formats | list IMG | read IMG NAME | extract IMG [NAME...] --to DIR
     python -m retrorag image create FORMAT OUT FILE... [--label L] [--basic NAME=SOURCE.bas] [--opt key=value]
+    python -m retrorag links [list | due | refresh [--all] | check ID...]   saved links and web copies
 """
 from __future__ import annotations
 
@@ -110,6 +111,10 @@ def main(argv: list[str] | None = None) -> int:
                     help="create: tokenise a BASIC text file as program NAME")
     im.add_argument("--opt", action="append", default=[], metavar="KEY=VALUE",
                     help="create: format option, e.g. size=pc720, fs=ffs, bootable=1, boot=3")
+    ln = sub.add_parser("links", help="saved links and copies of web pages / sites / GitHub repositories")
+    ln.add_argument("action", nargs="?", default="list", choices=["list", "due", "refresh", "check"])
+    ln.add_argument("ids", nargs="*", type=int, help="check: link ids")
+    ln.add_argument("--all", action="store_true", help="refresh: every link, not just the ones due")
     args = p.parse_args(argv)
 
     if args.cmd == "image":
@@ -208,6 +213,25 @@ def main(argv: list[str] | None = None) -> int:
             v = getattr(st, f.name)
             print(f"{f.name:>26} = {'***' if f.name in ('embed_api_key', 'api_token') and v else v}")
         return 0
+    if args.cmd == "links":
+        from .webcopy import STATUS_WORDS, run_links
+        from .library import LINK_MODES
+        names = {s.id: s.name for s in lib.systems()}
+        if args.action in ("list", "due"):
+            for l in (lib.links_due() if args.action == "due" else lib.links()):
+                due = l.next_due()
+                print(f"{l.id:4}  {names.get(l.system_id, '?')[:22]:22}  {LINK_MODES[l.mode][:24]:24}  "
+                      f"{STATUS_WORDS.get(l.status, l.status)[:16]:16}  next {due.date() if due else '-'}  {l.label}")
+            return 0
+        ids = args.ids if args.action == "check" else [l.id for l in (lib.links() if args.all else lib.links_due())]
+        if not ids:
+            print("Nothing to re-check.")
+            return 0
+        res = run_links(lib, ids, log=print)
+        if any(r.get("added") or r.get("updated") for r in res):
+            from .indexer import build_index
+            build_index(lib, log=print)
+        return 0 if all(r["status"] == "ok" for r in res) else 1
     if args.cmd == "stats":
         for k, v in lib.stats().items():
             print(f"{k:>16}: {v}")

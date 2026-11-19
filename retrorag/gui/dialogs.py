@@ -40,9 +40,10 @@ def system_choices(lib: Library, exclude: set | None = None) -> list[tuple[str, 
 
 class SystemDialog(QDialog):
     def __init__(self, parent=None, system: System | None = None, lib: Library | None = None,
-                 parent_id: int | None = None):
+                 parent_id: int | None = None, host_id: int | None = None):
         super().__init__(parent)
-        self.setWindowTitle("Edit system" if system else "Add retro system")
+        self.setWindowTitle("Edit system" if system else
+                            "Add peripheral / expansion" if host_id else "Add retro system")
         self.setMinimumWidth(460)
         f = QFormLayout(self)
         self.name = QLineEdit(system.name if system else "")
@@ -54,6 +55,10 @@ class SystemDialog(QDialog):
         self.kind = QComboBox(); self.kind.setEditable(True); self.kind.addItems(SYSTEM_KINDS)
         if system and system.kind:
             self.kind.setCurrentText(system.kind)
+        elif host_id:
+            self.kind.setCurrentText("Peripheral")
+        if host_id and not system:
+            self.name.setPlaceholderText("e.g. 1541 Disk Drive, 6502 Second Processor, Blizzard 1230 IV")
         self.cpu = QLineEdit(system.cpu if system else "")
         self.cpu.setPlaceholderText("e.g. MOS 6510 @ 1 MHz")
         self.notes = QPlainTextEdit(system.notes if system else "")
@@ -71,6 +76,34 @@ class SystemDialog(QDialog):
                                    "Documents on the family apply to all its variants; each variant keeps its own "
                                    "extra documents.")
         f.addRow("Variant of", self.parent_sys)
+        # peripherals and expansions: the machines it works with
+        from PySide6.QtWidgets import QListWidget, QListWidgetItem
+        self.hosts = QListWidget()
+        self.hosts.setToolTip("For a peripheral or expansion (disk drive, second processor, accelerator, RAM or IDE "
+                              "board...): tick the machines it works with.\nSearching one of those machines then "
+                              "includes this one's documents, and the AI is told it's a peripheral with its own "
+                              "hardware.\nTick a family (e.g. BBC Micro) to cover all its variants.")
+        have = {h.id for h in lib.hosts(system.id)} if (system and lib is not None) else set()
+        if host_id:
+            have.add(host_id)
+        if lib is not None:
+            for label, sid in system_choices(lib, {system.id} if system else set()):
+                it = QListWidgetItem(label.replace("└ ", "").rstrip())
+                it.setData(Qt.UserRole, sid)
+                it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
+                it.setCheckState(Qt.Checked if sid in have else Qt.Unchecked)
+                self.hosts.addItem(it)
+        self.hosts.setFixedHeight(min(130, max(48, self.hosts.sizeHintForRow(0) * min(5, max(2, self.hosts.count()))
+                                              + 8)))
+        self._hosts_note = QLabel("Leave all unticked for a machine in its own right.")
+        self._hosts_note.setObjectName("muted")
+        hv = QVBoxLayout(); hv.setContentsMargins(0, 0, 0, 0); hv.setSpacing(2)
+        hv.addWidget(self.hosts); hv.addWidget(self._hosts_note)
+        hw = QWidget(); hw.setLayout(hv)
+        f.addRow("Works with", hw)
+        if self.hosts.count() == 0:
+            hw.hide()
+            f.labelForField(hw).hide()
         f.addRow("Aliases", self.aliases)
         f.addRow("Manufacturer", self.manufacturer)
         f.addRow("Year", self.year)
@@ -109,7 +142,9 @@ class SystemDialog(QDialog):
 
     def values(self) -> dict:
         fm = self.formats.value()
-        return {**({"media_formats": fm} if fm is not None else {}),
+        hosts = [self.hosts.item(i).data(Qt.UserRole) for i in range(self.hosts.count())
+                 if self.hosts.item(i).checkState() == Qt.Checked]
+        return {**({"media_formats": fm} if fm is not None else {}), "hosts": hosts,
                 "name": self.name.text().strip(), "parent_id": self.parent_sys.currentData(),
                 "aliases": self.aliases.text().strip(),
                 "manufacturer": self.manufacturer.text().strip(), "year": self.year.text().strip(),

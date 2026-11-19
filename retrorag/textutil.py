@@ -81,15 +81,14 @@ def read_text_file(p: Path) -> str:
 
 
 def html_to_text(src: str) -> str:
-    src = re.sub(r"(?is)<(script|style).*?</\1>", "", src)
-    src = re.sub(r"(?i)<br\s*/?>", "\n", src)
-    src = re.sub(r"(?i)</(p|div|h\d|li|tr|pre|table)>", "\n\n", src)
-    src = re.sub(r"(?i)<h(\d)[^>]*>", lambda m: "\n" + "#" * int(m.group(1)) + " ", src)
-    src = re.sub(r"(?i)<li[^>]*>", "- ", src)
-    src = re.sub(r"<[^>]+>", "", src)
-    src = html.unescape(src)
-    src = re.sub(r"[ \t]+\n", "\n", src)
-    return re.sub(r"\n{3,}", "\n\n", src).strip() + "\n"
+    """HTML -> readable Markdown (menus, scripts and page furniture dropped; <pre> listings kept exactly)."""
+    from .htmltext import html_to_markdown
+    try:
+        return html_to_markdown(src)
+    except Exception:            # fall back to plain tag stripping
+        src = re.sub(r"(?is)<(script|style).*?</\1>", "", src)
+        src = re.sub(r"<[^>]+>", " ", src)
+        return re.sub(r"\n{3,}", "\n\n", html.unescape(src)).strip() + "\n"
 
 
 def rtf_to_markdown(data: bytes) -> str:

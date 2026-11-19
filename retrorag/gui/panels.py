@@ -336,7 +336,9 @@ class DocPanel(QWidget):
         busy = d.id in self.busy_ids
         no_text = scan and d.text_status == "none"
         b_edit, b_ocr = self.buttons["open_editor"], self.buttons["ocr"]
-        b_edit.setText(f"Proofread ({d.flagged} flagged)" if scan and d.flagged else "Proofread" if scan else "Open text")
+        from ..notes import is_note
+        b_edit.setText(f"Proofread ({d.flagged} flagged)" if scan and d.flagged else "Proofread" if scan else
+                       "Edit note" if is_note(d) else "Open text")
         b_edit.setEnabled(not busy and (bool(d.text_path) and not no_text))
         b_edit.setToolTip("Run OCR first - there is no text to proofread yet." if no_text else
                           "Open the text editor (scan on the left, text on the right).")

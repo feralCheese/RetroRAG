@@ -127,3 +127,11 @@ def extract_job(library: str, doc_id: int, progress=None, log=print, cancel=None
     lib = Library(library)
     extract(lib, lib.document(doc_id), log=log)
     return doc_id
+
+
+def links_job(library: str, link_ids: list[int], progress=None, log=print, cancel=None) -> list[dict]:
+    """Copy / re-copy / check links (webcopy.py). In a child process: PDF text extraction holds the GIL."""
+    from .library import Library
+    from .webcopy import run_links
+    lib = Library(library)
+    return run_links(lib, link_ids, progress=progress, log=log)

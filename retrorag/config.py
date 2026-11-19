@@ -208,7 +208,10 @@ EMBED_PRESETS = {
     "None - keyword search only": ("none", "", "", "", ""),
 }
 
+NOTES_CATEGORY = "My Notes"       # the user's own findings and notes (see notes.py)
+
 CATEGORIES = [
+    NOTES_CATEGORY,
     "User Guides & Manuals",
     "Programming Reference",
     "Schematics",
@@ -222,4 +225,5 @@ CATEGORIES = [
     "Other",
 ]
 
-SYSTEM_KINDS = ["Home computer", "Console", "Handheld", "Arcade", "Workstation", "Peripheral", "Other"]
+SYSTEM_KINDS = ["Home computer", "Console", "Handheld", "Arcade", "Workstation", "Peripheral", "Expansion / add-on",
+                "Second processor", "Other"]

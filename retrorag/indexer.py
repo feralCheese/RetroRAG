@@ -25,9 +25,15 @@ def doc_header(lib: Library, d: Document, s: System | None) -> str:
              f"Type: {d.kind}" + (f", {d.pages} pages" if d.pages else "")]
     if s and (s.manufacturer or s.year or s.cpu):
         lines.append("System details: " + ", ".join(x for x in (s.manufacturer, s.year, s.cpu) if x))
+    from .config import NOTES_CATEGORY
+    if d.category == NOTES_CATEGORY:
+        lines.append("This is one of the library owner's own notes: their first-hand findings about the "
+                     + ("machine" if s is None or not lib.effective_hosts(s.id) else "peripheral / expansion") + ".")
     if d.tags:
         lines.append(f"Tags: {d.tags}")
-    if d.source_url:
+    if d.source_url and d.link_id:
+        lines.append(f"Source: {d.source_url} (copied from the web {(d.text_updated or d.added or '')[:10]})")
+    elif d.source_url:
         lines.append(f"Source: {d.source_url}")
     if d.notes:
         lines.append(f"Notes: {d.notes}")

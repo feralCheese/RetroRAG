@@ -2,7 +2,8 @@
 
     REST:  http://127.0.0.1:8765/docs          (Swagger UI)   /openapi.json  (Open WebUI "tool server", etc.)
     MCP:   http://127.0.0.1:8766/mcp           (streamable HTTP: LM Studio, Open WebUI, Cursor, other MCP clients)
-Everything is read-only except creating disk/tape images (POST /images) and the upload area (/uploads, /transfer),
+Everything is read-only except notes (POST /notes), creating disk/tape images (POST /images) and the upload area
+(/uploads, /transfer),
 which hold files passing between an AI chat and RetroRAG. /transfer/<id>/... links need no access token: the long
 random id in the link is the permission, and areas expire (see transfer.py).
 """
@@ -33,13 +34,21 @@ def create_app(library: str | Path):
         category: str | None = None
         limit: int = 8
         mode: str = "hybrid"
+        include_peripherals: bool = True
+
+    class NoteRequest(BaseModel):
+        system: str
+        title: str
+        text: str
+        tags: str = ""
 
     globals()["SearchRequest"] = SearchRequest      # FastAPI resolves (string) annotations in module globals
+    globals()["NoteRequest"] = NoteRequest
 
-    def _search(query, system, category, limit, mode):
+    def _search(query, system, category, limit, mode, include_peripherals=True):
         lib.reload_settings()
         return [r.to_dict() for r in S.search(lib, query, k=max(1, min(limit, 50)), system=system,
-                                              category=category, mode=mode)]
+                                              category=category, mode=mode, include_peripherals=include_peripherals)]
 
     @app.get("/", include_in_schema=False)
     def root():
@@ -52,16 +61,42 @@ def create_app(library: str | Path):
     def search_get(q: str = Query(..., description="Question or keywords, e.g. 'VIC-II raster interrupt' or '$D012'"),
                    system: str | None = Query(None, description="System name or alias, e.g. 'C64', 'Amiga 500'"),
                    category: str | None = Query(None, description="e.g. 'Programming Reference', 'Schematics', 'Pinouts'"),
-                   limit: int = 8, mode: str = Query("hybrid", description="hybrid | keyword | semantic")):
-        return _search(q, system, category, limit, mode)
+                   limit: int = 8, mode: str = Query("hybrid", description="hybrid | keyword | semantic"),
+                   include_peripherals: bool = Query(True, description="With a system: also search the "
+                                                     "peripherals and expansions that work with it")):
+        return _search(q, system, category, limit, mode, include_peripherals)
 
     @app.post("/search", operation_id="search_docs_post", summary="Search (JSON body)")
     def search_post(req: SearchRequest):
-        return _search(req.query, req.system, req.category, req.limit, req.mode)
+        return _search(req.query, req.system, req.category, req.limit, req.mode, req.include_peripherals)
 
-    @app.get("/systems", operation_id="list_systems", summary="List retro systems in the library")
+    @app.get("/systems", operation_id="list_systems",
+             summary="List retro systems: variants, peripherals / expansions and the machines they work with, links")
     def systems():
-        return [s.__dict__ for s in lib.systems()]
+        from .webcopy import describe_link
+        out = []
+        for s in lib.systems():
+            out.append({**s.__dict__, "peripheral_for": [h.name for h in lib.hosts(s.id)],
+                        "peripherals_and_expansions": [p.name for p in lib.peripherals(s.id)],
+                        "links": [describe_link(lib, l) for l in lib.links(s.id)]})
+        return out
+
+    @app.post("/notes", operation_id="add_note",
+              summary="Save a note in the owner's 'My Notes' for a system or peripheral (only when asked to)")
+    def add_note(req: NoteRequest):
+        from .notes import AI_SOURCE, add_note as _add
+        s = lib.find_system(req.system)
+        if not s:
+            raise HTTPException(404, f"No system matching '{req.system}'")
+        if not req.text.strip():
+            raise HTTPException(422, "The note is empty")
+        doc_id = _add(lib, s, req.title, req.text, tags=req.tags, source=AI_SOURCE)
+        try:
+            from .indexer import build_index
+            build_index(lib, [doc_id], log=lambda m: None)
+        except Exception:
+            pass
+        return {"doc_id": doc_id, "system": s.name, "title": lib.document(doc_id).title}
 
     @app.get("/documents", operation_id="list_documents", summary="List documents")
     def documents(system: str | None = None, category: str | None = None, limit: int = 500):

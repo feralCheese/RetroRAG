@@ -193,6 +193,11 @@ class MainWindow(QMainWindow):
         self.a_add_system = A("New system", self.add_system, "Ctrl+Shift+N", "Add a retro system", "add")
         self.a_add_files = A("Add files", self.add_files_dialog, "Ctrl+O", "Add documents, images, ROMs, disk images…", "doc")
         self.a_add_folder = A("Add folder", self.add_folder_dialog, None, "Add a whole folder, e.g. emulator source", "folder")
+        self.a_add_note = A("Add note", lambda: self.edit_note(None), "Ctrl+Shift+M",
+                            "Write down your own findings about the selected system or peripheral", "edit")
+        self.a_add_link = A("Add link", lambda: self.add_link(), "Ctrl+Shift+L",
+                            "Save a web page, docs site or GitHub repository for the selected system - and copy it "
+                            "into the library if you like", "link")
         self.a_ocr = A("Run OCR", self.ocr_selected_or_pending, "Ctrl+R",
                        "OCR the selected documents (or every document that needs it)", "scan")
         self.a_index = A("Build index", lambda: self.build_index(False), "F5", "Chunk + embed new/changed documents", "sync")
@@ -204,8 +209,8 @@ class MainWindow(QMainWindow):
         tb.setMovable(False)
         tb.setIconSize(QSize(18, 18))
         self.addToolBar(tb)
-        for a in (self.a_add_system, self.a_add_files, self.a_add_folder, None, self.a_ocr, self.a_index, None,
-                  self.a_servers, self.a_connect):
+        for a in (self.a_add_system, self.a_add_files, self.a_add_folder, self.a_add_note, self.a_add_link, None,
+                  self.a_ocr, self.a_index, None, self.a_servers, self.a_connect):
             tb.addSeparator() if a is None else tb.addAction(a)
         exp = QToolButton(); exp.setText("Export"); exp.setPopupMode(QToolButton.InstantPopup)
         exp.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
@@ -231,8 +236,13 @@ class MainWindow(QMainWindow):
         m.addSeparator(); m.addAction("Exit", self.close)
         m = mb.addMenu("&System")
         m.addAction(self.a_add_system)
+        m.addAction("Add peripheral / expansion to selected system…", self.add_peripheral)
         m.addAction("Edit selected system…", self.edit_system)
         m.addAction("Remove selected system…", self.remove_system)
+        m.addSeparator()
+        m.addAction(self.a_add_note)
+        m.addAction(self.a_add_link)
+        m.addAction("Links…", lambda: self.show_links())
         m = mb.addMenu("&Documents")
         for a in (self.a_add_files, self.a_add_folder, self.a_ocr):
             m.addAction(a)
@@ -395,7 +405,8 @@ class MainWindow(QMainWindow):
     def refresh_stats(self):
         st = self.lib.stats()
         self.stats_label.setText(f"{st['systems']} systems · {st['documents']} docs · {st['chunks']} chunks · "
-                                 f"{st['needs_ocr']} need OCR · {st['stale']} out of date")
+                                 f"{st['needs_ocr']} need OCR · {st['stale']} out of date" +
+                                 (f" · {st['links_due']} link(s) to re-check" if st["links_due"] else ""))
         self._render_home(st)
 
     def _render_home(self, st):
@@ -418,27 +429,37 @@ class MainWindow(QMainWindow):
                bad("AI servers stopped - <b>Start servers</b> for Unsloth Studio and other HTTP clients"))
         mode = "Portable" if is_portable() else "Installed"
 
-        def tile(n, label, col=None, goto=None):
+        n_tiles = 7 if st["links"] else 6
+        width = f"{100 // n_tiles}%"
+
+        def tile(n, label, col=None, goto=None, action="fix"):
             num = (f"<span style='font-size:{t['big']};font-weight:{t['bold']};color:{col or t['text']}'>{n}</span>")
             lab = f"<span style='color:{t['muted']}'>{label}</span>"
             if goto and n:   # clickable: jump to the first document behind this number
-                return (f"<td width='16%' style='background:{t['surface']};padding:14px 16px'>"
+                return (f"<td width='{width}' style='background:{t['surface']};padding:14px 16px'>"
                         f"<a href='goto:{goto}' style='text-decoration:none'>{num}<br>{lab}<br>"
-                        f"<span style='color:{t['accent']}'>fix ›</span></a></td>")
-            return f"<td width='16%' style='background:{t['surface']};padding:14px 16px'>{num}<br>{lab}</td>"
-        tiles = "".join([tile(st["systems"], "systems"), tile(st["documents"], "documents"),
-                         tile(st["chunks"], f"chunks · {st['embedded']} embedded"),
-                         tile(st["needs_ocr"], "need OCR", t["warn"] if st["needs_ocr"] else None, "needs_ocr"),
-                         tile(st["flagged_docs"], "with flagged words", t["warn"] if st["flagged_docs"] else None,
-                              "flagged"),
-                         tile(st["stale"], "out of date", t["warn"] if st["stale"] else None, "stale")])
+                        f"<span style='color:{t['accent']}'>{action} ›</span></a></td>")
+            return f"<td width='{width}' style='background:{t['surface']};padding:14px 16px'>{num}<br>{lab}</td>"
+        tiles = [tile(st["systems"], "systems"), tile(st["documents"], "documents"),
+                 tile(st["chunks"], f"chunks · {st['embedded']} embedded"),
+                 tile(st["needs_ocr"], "need OCR", t["warn"] if st["needs_ocr"] else None, "needs_ocr"),
+                 tile(st["flagged_docs"], "with flagged words", t["warn"] if st["flagged_docs"] else None,
+                      "flagged"),
+                 tile(st["stale"], "out of date", t["warn"] if st["stale"] else None, "stale")]
+        if st["links"]:
+            gone = f"<br>{st['links_gone']} gone" if st["links_gone"] else ""
+            tiles.append(tile(st["links_due"], f"links to re-check{gone}", t["warn"] if st["links_due"] else None,
+                              "links", "re-check"))
+        tiles = "".join(tiles)
 
         def step(n, title, body):
             return (f"<tr><td valign='top' style='padding:6px 12px 6px 0'><span style='background:{t['accent_soft']};"
                     f"color:{t['accent']};font-weight:{t['bold']}'>&nbsp;{n}&nbsp;</span></td>"
                     f"<td style='padding:6px 0'><b>{title}</b><br><span style='color:{t['muted']}'>{body}</span></td></tr>")
         steps = "".join([
-            step(1, "New system", "Add a machine, e.g. <i>Commodore 64</i> with aliases <i>C64, CBM 64</i>."),
+            step(1, "New system", "Add a machine, e.g. <i>Commodore 64</i> with aliases <i>C64, CBM 64</i>. "
+                 "Peripherals and expansions (a 1541 drive, a Tube second processor, an Amiga accelerator) are "
+                 "systems too: right-click a machine - <b>Add peripheral / expansion</b>."),
             step(2, "Add files or folders", "Or drag &amp; drop onto a system or category: manuals, programming "
                  "references, schematics, pinouts, datasheets (PDF, GIF, JPG, PNG, TIFF, TXT, HTML), emulator source "
                  "trees, ROMs/firmware, disk &amp; tape images (D64, ADF, TAP, TZX, DSK…). Zips are unpacked."),
@@ -459,7 +480,11 @@ class MainWindow(QMainWindow):
 <tr><td style='color:{t['muted']};padding-right:14px'>AI access</td><td>{srv}</td></tr></table>
 <p style='font-size:{t['h2']};font-weight:{t['bold']};margin-top:18px'>Getting started</p>
 <table cellspacing=0 cellpadding=0>{steps}</table>
-<p style='color:{t['muted']};margin-top:14px'>Tip: for schematics and pinouts, re-OCR a page in the editor with
+<p style='color:{t['muted']};margin-top:14px'><b>Add note</b> (Ctrl+Shift+M) keeps your own findings about a
+system or peripheral in <i>My Notes</i>; the AI is told they're yours. <b>Add link</b> (Ctrl+Shift+L) saves a web
+page, docs site or GitHub repository - and can copy it into the library, so local AIs can search it and it survives
+the site going away. RetroRAG reminds you here when copies are due for a re-check.</p>
+<p style='color:{t['muted']};margin-top:6px'>Tip: for schematics and pinouts, re-OCR a page in the editor with
 layout mode <i>11 - Sparse text</i>, and use the Notes field - notes and tags are searchable even when OCR can't
 read a drawing.</p>
 </div>""")
@@ -474,7 +499,9 @@ read a drawing.</p>
 
     def _home_link(self, url):
         s = url.toString()
-        if s.startswith("goto:"):
+        if s == "goto:links":
+            self.show_links(due_only=True)
+        elif s.startswith("goto:"):
             self.goto_problem(s[5:])
         else:
             from PySide6.QtGui import QDesktopServices
@@ -543,31 +570,52 @@ read a drawing.</p>
         c = self.lib.conn()
         systems = self.lib.systems()
         ids = {x.id for x in systems}
+        by_id = {x.id: x for x in systems}
+        hmap = {p: [h for h in hs if h in ids] for p, hs in self.lib.host_map().items()}
+        periph_of: dict = {}
+        for x in systems:
+            for h in hmap.get(x.id, []):
+                periph_of.setdefault(h, []).append(x)
+        links_of: dict = {}
+        for l in self.lib.links():
+            links_of.setdefault(l.system_id, []).append(l)
         kids: dict = {}
         for x in systems:
-            kids.setdefault(x.parent_id if x.parent_id in ids else None, []).append(x)
+            par = x.parent_id if x.parent_id in ids else None
+            if par is None and hmap.get(x.id):
+                continue           # a peripheral / expansion: shown under the machines it works with
+            kids.setdefault(par, []).append(x)
+        from ..config import NOTES_CATEGORY
 
-        def build(s, parent_item) -> bool:
+        def build(s, parent_item, role: str = "top", path: frozenset = frozenset()) -> bool:
+            if s.id in path:       # "works with" loops (A for B, B for A): show each once per branch
+                return False
+            path = path | {s.id}
             counts = {r[0]: r[1] for r in c.execute(
                 "SELECT category, COUNT(*) FROM documents WHERE system_id=? GROUP BY category", (s.id,))}
-            variant = parent_item is not None
+            variant = role == "variant"
+            is_periph = bool(hmap.get(s.id)) or role == "peripheral"
             si = QTreeWidgetItem([s.name, str(sum(counts.values()))])
             si.setData(0, ROLE, ("system", s.id))
-            si.setIcon(0, theme.icon("system", theme.T["muted"] if variant else theme.T["accent"]))
+            si.setIcon(0, theme.icon("chip" if is_periph else "system",
+                                     theme.T["muted"] if role != "top" else theme.T["accent"]))
             si.setForeground(1, QColor(theme.T["muted"]))
-            f = si.font(0); f.setBold(not variant); si.setFont(0, f)
-            info = ", ".join(x for x in (s.manufacturer, s.year, s.cpu, s.aliases) if x)
+            f = si.font(0); f.setBold(role == "top"); si.setFont(0, f)
+            info = ", ".join(x for x in (s.kind if is_periph else "", s.manufacturer, s.year, s.cpu, s.aliases) if x)
             if kids.get(s.id):
                 info += ("\n" if info else "") + "Documents here apply to all its variants"
             if variant:
                 info += ("\n" if info else "") + f"Variant of {parent_item.text(0)}"
+            if hmap.get(s.id):
+                info += ("\n" if info else "") + "Peripheral / expansion for " + \
+                        ", ".join(by_id[h].name for h in hmap[s.id])
             si.setToolTip(0, info)
             (parent_item.addChild(si) if parent_item else self.tree.addTopLevelItem(si))
             cats = [cat for cat in CATEGORIES if cat in counts] + sorted(set(counts) - set(CATEGORIES))
             for cat in cats:
                 ci = QTreeWidgetItem([cat, str(counts[cat])])
                 ci.setData(0, ROLE, ("category", s.id, cat))
-                ci.setIcon(0, theme.icon("folder", theme.T["accent"]))
+                ci.setIcon(0, theme.icon("edit" if cat == NOTES_CATEGORY else "folder", theme.T["accent"]))
                 ci.setForeground(1, QColor(theme.T["muted"]))
                 si.addChild(ci)
                 if filtering:
@@ -578,8 +626,26 @@ read a drawing.</p>
                         ci.setExpanded(True)
                 else:
                     ci.addChild(QTreeWidgetItem(["…"]))   # lazy placeholder
+            links = links_of.get(s.id, [])
+            if links and mode == "All":
+                shown = [l for l in links if not flt or flt in l.label.lower() or flt in l.url.lower()]
+                if shown:
+                    self._links_node(si, s.id, shown, filtering)
             for ch in kids.get(s.id, []):
-                build(ch, si)
+                build(ch, si, "variant", path)
+            periph = [p for p in periph_of.get(s.id, []) if p.id not in path]
+            if periph:
+                pn = QTreeWidgetItem(["Peripherals & expansions", str(len(periph))])
+                pn.setData(0, ROLE, ("peripherals", s.id))
+                pn.setIcon(0, theme.icon("chip", theme.T["accent"]))
+                pn.setForeground(1, QColor(theme.T["muted"]))
+                pn.setToolTip(0, f"Disk drives, second processors, expansion boards... that work with {s.name}.\n"
+                                 f"Searching {s.name} includes their documents.")
+                si.addChild(pn)
+                for p in periph:
+                    build(p, pn, "peripheral", path)
+                if filtering and pn.childCount():
+                    pn.setExpanded(True)
             # systems always stay visible (a new, empty system mustn't vanish under a filter); with a filter on,
             # open the ones that have matching documents
             if (filtering and si.childCount()) or ("system", s.id) in expanded:
@@ -684,6 +750,183 @@ read a drawing.</p>
         it.setToolTip(0, tip); it.setToolTip(1, tip)
         return it
 
+    def _links_node(self, si: QTreeWidgetItem, system_id: int, links: list, filtering: bool):
+        from .web_ui import link_tooltip, status_text
+        t = theme.T
+        due = sum(1 for l in links if l.is_due())
+        ln = QTreeWidgetItem(["Links", f"{due} due" if due else str(len(links))])
+        ln.setData(0, ROLE, ("links", system_id))
+        ln.setIcon(0, theme.icon("link", t["accent"]))
+        ln.setForeground(1, QColor(t["warn"] if due else t["muted"]))
+        ln.setToolTip(0, "Web pages, docs sites and GitHub repositories saved for this system. Copied ones are in "
+                         "the categories above too.")
+        si.addChild(ln)
+        for l in links:
+            st, col = status_text(l)
+            it = QTreeWidgetItem([l.label, st])
+            it.setData(0, ROLE, ("link", l.id))
+            it.setIcon(0, theme.icon("link" if l.copies else "view", t["muted"]))
+            it.setForeground(1, QColor(t.get(col, t["muted"])))
+            it.setTextAlignment(1, Qt.AlignRight | Qt.AlignVCenter)
+            if l.status == "gone":
+                f = it.font(0); f.setStrikeOut(True); it.setFont(0, f)
+            tip = link_tooltip(self.lib, l)
+            it.setToolTip(0, tip); it.setToolTip(1, tip)
+            ln.addChild(it)
+        if filtering:
+            ln.setExpanded(True)
+
+    # ================================================================== peripherals, notes, links
+    def add_peripheral(self, host_id: int | None = None):
+        if host_id is None:
+            s = self.current_system()
+            if not s:
+                QMessageBox.information(self, "Add peripheral / expansion",
+                                        "Select the machine it works with in the library tree first.")
+                return
+            host_id = s.id
+        self.add_system(host_id=host_id)
+
+    def attach_existing(self, host_id: int):
+        from .dialogs import system_choices
+        host = self.lib.system(host_id)
+        have = {p.id for p in self.lib.peripherals(host_id)}
+        choices = [(label, sid) for label, sid in system_choices(self.lib, {host_id}) if sid not in have]
+        if not choices:
+            QMessageBox.information(self, "Attach", "There are no other systems to attach.")
+            return
+        label, ok = QInputDialog.getItem(self, "Attach a peripheral / expansion",
+                                         f"Which system works with {host.name}?",
+                                         [c[0].strip().lstrip("└ ") for c in choices], 0, False)
+        if not ok:
+            return
+        sid = choices[[c[0].strip().lstrip("└ ") for c in choices].index(label)][1]
+        self.lib.add_host(sid, host_id)
+        self.log(f"{self.lib.system(sid).name} now works with {host.name}.")
+        self.refresh_all()
+        self.schedule_index()
+
+    def detach_peripheral(self, system_id: int, host_id: int):
+        s, h = self.lib.system(system_id), self.lib.system(host_id)
+        if QMessageBox.question(self, "Detach", f"Stop listing {s.name} as a peripheral / expansion for {h.name}?\n\n"
+                                "Nothing is deleted.") != QMessageBox.Yes:
+            return
+        self.lib.remove_host(system_id, host_id)
+        self.refresh_all()
+        self.schedule_index()
+
+    def edit_note(self, doc_id: int | None = None, system_id: int | None = None):
+        from .notes_ui import NoteDialog
+        if doc_id is None and system_id is None:
+            s = self.current_system()
+            system_id = s.id if s else None
+        if doc_id is None and not self.lib.systems():
+            QMessageBox.information(self, "Add a system first", "Notes belong to a system or peripheral - add one "
+                                    "first.")
+            return
+        if doc_id is not None and doc_id in self.editors:
+            self._close_editor(doc_id)
+        dlg = NoteDialog(self, self.lib, system_id, doc_id)
+        dlg.saved.connect(lambda i: (self.log(f"Saved note '{self.lib.document(i).title}'"), self.refresh_all(),
+                                     self.select_doc(i), self.schedule_index()))
+        dlg.deleted.connect(lambda i: (self.doc_panel.show_doc(None), self.refresh_all()))
+        dlg.exec()
+
+    def add_link(self, system_id: int | None = None):
+        from .web_ui import save_link_dialog
+        if system_id is None:
+            s = self.current_system()
+            system_id = s.id if s else None
+        if not self.lib.systems():
+            QMessageBox.information(self, "Add a system first", "Links belong to a system or peripheral - add one "
+                                    "first.")
+            return
+        lid = save_link_dialog(self, self.lib, None, system_id)
+        if lid:
+            self.refresh_all()
+            self.run_links([lid])
+
+    def edit_link(self, link_id: int):
+        from .web_ui import save_link_dialog
+        l = self.lib.link(link_id)
+        if not l:
+            return
+        lid = save_link_dialog(self, self.lib, l)
+        self.refresh_all()
+        if lid:
+            self.run_links([lid])
+
+    def remove_link(self, link_id: int):
+        from .web_ui import remove_link_dialog
+        l = self.lib.link(link_id)
+        if not l:
+            return
+        ids = self.lib.link_doc_ids(link_id)
+        for i in ids:
+            if not self._close_editor(i):
+                return
+        r = remove_link_dialog(self, self.lib, l)
+        if r and r[1]:
+            self.doc_panel.show_doc(None)
+        self.refresh_all()
+
+    def open_link(self, link_id: int):
+        l = self.lib.link(link_id)
+        if l:
+            from PySide6.QtCore import QUrl
+            from PySide6.QtGui import QDesktopServices
+            QDesktopServices.openUrl(QUrl(l.url))
+
+    def show_links(self, system_id: int | None = None, due_only: bool = False):
+        from .web_ui import LinksWindow
+        win = getattr(self, "links_win", None)
+        if win is not None:
+            win.close()
+            win.deleteLater()
+        win = LinksWindow(self, self.lib, system_id, due_only)
+        win.run_links.connect(self.run_links)
+        win.changed.connect(self.refresh_all)
+        win.docs_deleted.connect(lambda ids: ([self._close_editor(i, force=True) for i in ids],
+                                              self.doc_panel.show_doc(None), self.refresh_all()))
+        self.links_win = win
+        win.show()
+        win.raise_()
+
+    def run_links(self, link_ids: list[int]):
+        links = [l for l in (self.lib.link(i) for i in link_ids) if l]
+        if not links:
+            return
+        lib_root, ids = str(self.lib.root), [l.id for l in links]
+        copies = any(l.copies for l in links)
+        name = (f"Copy {links[0].label[:40]}" if len(links) == 1 and links[0].copies else
+                f"Check {links[0].label[:40]}" if len(links) == 1 else f"Re-check {len(links)} links")
+
+        def job(ctx):
+            return ctx.run_process("retrorag.proc:links_job", library=lib_root, link_ids=ids)
+
+        def done(res):
+            res = res or []
+            bad = [r for r in res if r.get("status") != "ok"]
+            self.refresh_all()
+            if getattr(self, "links_win", None) is not None:
+                try:
+                    self.links_win.refresh()
+                except RuntimeError:
+                    self.links_win = None
+            if any(r.get("added") or r.get("updated") for r in res):
+                self.schedule_index()
+            if len(res) == 1:
+                r = res[0]
+                self.statusBar().showMessage(f"{r['title']}: {r['message']}", 12000)
+            else:
+                self.statusBar().showMessage(f"Re-checked {len(res)} link(s)" +
+                                             (f" - {len(bad)} need a look (see Links)" if bad else ""), 12000)
+            if len(res) == 1 and bad and bad[0]["status"] in ("error", "refused") and copies:
+                QMessageBox.information(self, "Link", f"{bad[0]['title']}\n\n{bad[0]['message']}")
+        self.jobs.submit(name, job, on_done=done, verb="Copying from the web" if copies else "Checking links")
+        if not self.jobs.busy:
+            self.statusBar().showMessage("Copying runs in the background - you can keep working.", 6000)
+
     # ================================================================== selection helpers
     def selected_doc_ids(self) -> list[int]:
         ids = []
@@ -703,13 +946,16 @@ read a drawing.</p>
         return list(dict.fromkeys(ids))
 
     def current_system(self):
-        it = self.tree.currentItem()
+        return self.system_of(self.tree.currentItem())
+
+    def system_of(self, it):
         while it is not None:
             key = it.data(0, ROLE)
-            if key and key[0] == "system":
+            if key and key[0] in ("system", "category", "folder", "links", "peripherals"):
                 return self.lib.system(key[1])
-            if key and key[0] in ("category", "folder"):
-                return self.lib.system(key[1])
+            if key and key[0] == "link":
+                l = self.lib.link(key[1])
+                return self.lib.system(l.system_id) if l else None
             if key and key[0] == "doc":
                 d = self.lib.document(key[1])
                 return self.lib.system(d.system_id) if d else None
@@ -733,6 +979,8 @@ read a drawing.</p>
             self.open_editor(key[1])
         elif key and key[0] == "system":
             self.edit_system()
+        elif key and key[0] == "link":
+            self.edit_link(key[1])
 
     def _context_menu(self, pos):
         it = self.tree.itemAt(pos)
@@ -740,11 +988,36 @@ read a drawing.</p>
         m = QMenu(self)
         if not key:
             m.addAction(self.a_add_system)
+        elif key[0] == "peripherals":
+            m.addAction("Add peripheral / expansion…", lambda: self.add_peripheral(key[1]))
+            m.addAction("Attach an existing system…", lambda: self.attach_existing(key[1]))
+        elif key[0] == "links":
+            m.addAction("Add link…", lambda: self.add_link(key[1]))
+            ids = [l.id for l in self.lib.links(key[1])]
+            m.addAction("Re-copy / check them all", lambda: self.run_links(ids))
+            m.addAction("Open the Links window…", lambda: self.show_links(key[1]))
+        elif key[0] == "link":
+            l = self.lib.link(key[1])
+            m.addAction("Open in browser", lambda: self.open_link(key[1]))
+            m.addAction("Re-copy now" if l and l.copies else "Check now", lambda: self.run_links([key[1]]))
+            m.addAction("Edit link…", lambda: self.edit_link(key[1]))
+            m.addAction("Open the Links window…", lambda: self.show_links(l.system_id if l else None))
+            m.addSeparator()
+            m.addAction("Remove link…", lambda: self.remove_link(key[1]))
         elif key[0] == "system":
             m.addAction("Add files…", self.add_files_dialog)
             m.addAction("Add folder…", self.add_folder_dialog)
+            m.addAction("Add note…", lambda: self.edit_note(None, key[1]))
+            m.addAction("Add link…", lambda: self.add_link(key[1]))
+            m.addSeparator()
             m.addAction("Edit system…", self.edit_system)
             m.addAction("Add variant…", lambda: self.add_system(parent_id=key[1]))
+            m.addAction("Add peripheral / expansion…", lambda: self.add_peripheral(key[1]))
+            par = it.parent()
+            pkey = par.data(0, ROLE) if par is not None else None
+            if pkey and pkey[0] == "peripherals":
+                host = self.lib.system(pkey[1])
+                m.addAction(f"Detach from {host.name}…", lambda: self.detach_peripheral(key[1], pkey[1]))
             m.addAction("Move all its documents to…", self.move_selected_dialog)
             m.addAction("Create disk / tape image…", lambda: self.create_image_dialog(key[1]))
             m.addSeparator()
@@ -761,6 +1034,9 @@ read a drawing.</p>
             m.addAction("Index now", lambda: self.build_index(False, self.selected_doc_ids()))
             if key[0] in ("category", "folder"):
                 m.addAction("Add files here…", self.add_files_dialog)
+            from ..config import NOTES_CATEGORY
+            if key[0] == "category" and key[2] == NOTES_CATEGORY:
+                m.addAction("Add note…", lambda: self.edit_note(None, key[1]))
             if key[0] == "doc":
                 m.addAction("Show in folder", lambda: self.doc_action("show_folder", key[1]))
                 d = self.lib.document(key[1])
@@ -772,8 +1048,8 @@ read a drawing.</p>
         m.exec(self.tree.viewport().mapToGlobal(pos))
 
     # ================================================================== systems
-    def add_system(self, parent_id: int | None = None):
-        dlg = SystemDialog(self, None, self.lib, parent_id)
+    def add_system(self, parent_id: int | None = None, host_id: int | None = None):
+        dlg = SystemDialog(self, None, self.lib, parent_id, host_id=host_id)
         if not dlg.exec():
             return
         v = dlg.values()
@@ -873,16 +1149,41 @@ read a drawing.</p>
         if not key:
             return
         dragged = [it.data(0, ROLE) for it in self.tree.selectedItems() if it.data(0, ROLE)]
+        if len(dragged) == 1 and dragged[0][0] == "system" and key[0] == "peripherals" and dragged[0][1] != key[1]:
+            child, host = self.lib.system(dragged[0][1]), self.lib.system(key[1])
+            if QMessageBox.question(self, "Peripheral / expansion",
+                                    f"List '{child.name}' as a peripheral / expansion for '{host.name}'?\n\n"
+                                    f"Searching {host.name} will then include {child.name}'s documents.") \
+                    == QMessageBox.Yes:
+                self.lib.add_host(child.id, host.id)
+                self.refresh_all()
+                self.schedule_index()
+            return
         if len(dragged) == 1 and dragged[0][0] == "system" and key[0] == "system" and dragged[0][1] != key[1]:
             child, fam = self.lib.system(dragged[0][1]), self.lib.system(key[1])
-            if QMessageBox.question(self, "Make variant", f"Make '{child.name}' a variant of '{fam.name}'?\n\n"
-                                    f"{fam.name}'s documents will then also apply to {child.name}.") == QMessageBox.Yes:
+            box = QMessageBox(self)
+            box.setWindowTitle("Systems")
+            box.setText(f"What is '{child.name}' to '{fam.name}'?")
+            box.setInformativeText(f"A variant shares {fam.name}'s documents (e.g. ZX Spectrum 128K of ZX Spectrum).\n"
+                                   f"A peripheral / expansion is its own hardware that works with {fam.name} (e.g. a "
+                                   f"disk drive): searching {fam.name} includes its documents.")
+            b_var = box.addButton("A variant", QMessageBox.AcceptRole)
+            b_per = box.addButton("A peripheral / expansion", QMessageBox.AcceptRole)
+            box.addButton(QMessageBox.Cancel)
+            box.exec()
+            if box.clickedButton() is b_var:
                 try:
                     self.lib.set_parent(child.id, fam.id)
                 except ValueError as e:
                     QMessageBox.warning(self, "Make variant", str(e))
-                self.refresh_all()
-                self.schedule_index()
+            elif box.clickedButton() is b_per:
+                self.lib.add_host(child.id, fam.id)
+            else:
+                return
+            self.refresh_all()
+            self.schedule_index()
+            return
+        if key[0] in ("peripherals", "links", "link"):
             return
         # where it lands: a category = its top level, a folder = that folder, a document = beside it,
         # a system = same category and folder as now
@@ -958,6 +1259,8 @@ read a drawing.</p>
             if key[0] == "doc":
                 d = self.lib.document(key[1])
                 system, category = self.lib.system(d.system_id), d.category
+            if key[0] in ("links", "link", "peripherals"):
+                system = self.system_of(item)
         folders = [p for p in paths if p.is_dir()]
         files = [p for p in paths if p.is_file()]
         if files:
@@ -1219,6 +1522,10 @@ read a drawing.</p>
         d = self.lib.document(doc_id)
         if not d:
             return
+        from ..notes import is_note
+        if is_note(d):
+            self.edit_note(doc_id)
+            return
         if doc_id in self.editors:
             ed = self.editors[doc_id]
         else:
@@ -1285,9 +1592,19 @@ read a drawing.</p>
             return
         QTimer.singleShot(1200, self._check_servers)
         self._update_server_action()
-        host = "127.0.0.1" if st.api_host == "0.0.0.0" else st.api_host
-        self.server_label.setText(f"REST :{st.api_port} · MCP :{st.mcp_port}" + (" (LAN)" if st.api_host == "0.0.0.0" else ""))
-        self.log(f"REST API  http://{host}:{st.api_port}/docs\nMCP HTTP  http://{host}:{st.mcp_port}/mcp")
+        everywhere = st.api_host in ("0.0.0.0", "")
+        self.server_label.setText(f"REST :{st.api_port} · MCP :{st.mcp_port}" + (" (LAN)" if everywhere else ""))
+        if everywhere:
+            from ..platform_util import lan_address
+            lan = lan_address()
+            self.log(f"Servers listening on all network interfaces ({st.api_host or '0.0.0.0'}):")
+            if lan:
+                self.log(f"  from other computers:  REST http://{lan}:{st.api_port}/docs   "
+                         f"MCP http://{lan}:{st.mcp_port}/mcp")
+            self.log(f"  on this PC:            REST http://127.0.0.1:{st.api_port}/docs   "
+                     f"MCP http://127.0.0.1:{st.mcp_port}/mcp")
+        else:
+            self.log(f"REST API  http://{st.api_host}:{st.api_port}/docs\nMCP HTTP  http://{st.api_host}:{st.mcp_port}/mcp")
 
     def _check_servers(self):
         dead = [s for s in self.servers if not s.running]

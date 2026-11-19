@@ -13,7 +13,7 @@ import re
 import sqlite3
 import threading
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS documents (
     notes TEXT DEFAULT '',
     source_url TEXT DEFAULT '',
     group_path TEXT DEFAULT '',      -- folder within a source tree (e.g. 'vice-3.8/src/vicii')
+    link_id INTEGER REFERENCES links(id) ON DELETE SET NULL,   -- copied from this link (web page / site / repo)
     added TEXT, text_updated TEXT, indexed TEXT,
     UNIQUE(system_id, path)
 );
@@ -103,6 +104,38 @@ CREATE TABLE IF NOT EXISTS doc_features (
     updated TEXT
 );
 
+-- peripherals and expansions: system_id (a disk drive, second processor, accelerator...) works with host_id
+CREATE TABLE IF NOT EXISTS system_hosts (
+    system_id INTEGER NOT NULL REFERENCES systems(id) ON DELETE CASCADE,
+    host_id INTEGER NOT NULL REFERENCES systems(id) ON DELETE CASCADE,
+    PRIMARY KEY (system_id, host_id)
+);
+CREATE INDEX IF NOT EXISTS idx_hosts_host ON system_hosts(host_id);
+
+-- links on a system: just saved, or copied into the library (see webcopy.py)
+CREATE TABLE IF NOT EXISTS links (
+    id INTEGER PRIMARY KEY,
+    system_id INTEGER NOT NULL REFERENCES systems(id) ON DELETE CASCADE,
+    url TEXT NOT NULL,
+    title TEXT DEFAULT '',
+    note TEXT DEFAULT '',
+    mode TEXT DEFAULT 'link',        -- link (saved only) | page | site (the page and the pages under it) | repo (GitHub)
+    category TEXT DEFAULT '',        -- where copies go
+    max_pages INTEGER DEFAULT 100,   -- site: page limit
+    include_files INTEGER DEFAULT 1, -- site: also copy PDFs / text files the pages link to
+    branch TEXT DEFAULT '',          -- repo: branch, tag or commit ('' = the default branch)
+    refresh_days INTEGER DEFAULT 180,-- remind to re-copy / re-check after this many days (0 = never)
+    status TEXT DEFAULT '',          -- '' (not done yet) | ok | unreachable | gone | refused | error
+    status_msg TEXT DEFAULT '',
+    last_fetched TEXT,               -- last time it worked (copied, or checked for a saved link)
+    last_checked TEXT,               -- last attempt
+    fail_count INTEGER DEFAULT 0,    -- attempts in a row that couldn't reach it
+    first_failed TEXT,
+    version TEXT DEFAULT '',         -- repo: commit copied
+    created TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_links_system ON links(system_id);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
     text, heading, keywords, content='chunks', content_rowid='id', tokenize='porter unicode61'
 );
@@ -126,6 +159,17 @@ def now_iso() -> str:
 def slugify(text: str) -> str:
     s = re.sub(r"[^A-Za-z0-9]+", "-", text.strip()).strip("-").lower()
     return s or "item"
+
+
+def normalise_url(url: str) -> str:
+    url = (url or "").strip()
+    if not url:
+        raise ValueError("A link needs an address")
+    if "://" not in url:
+        url = "https://" + url
+    if not url.lower().startswith(("http://", "https://")):
+        raise ValueError("Links must be web addresses (http:// or https://)")
+    return url
 
 
 def safe_filename(name: str) -> str:
@@ -172,6 +216,7 @@ class Document:
     notes: str = ""
     source_url: str = ""
     group_path: str = ""
+    link_id: int | None = None
     added: str = ""
     text_updated: str | None = None
     indexed: str | None = None
@@ -180,6 +225,65 @@ class Document:
     def is_stale(self) -> bool:
         """Text changed (or never indexed) since the last index build."""
         return not self.indexed or (self.text_updated or "") > self.indexed
+
+
+LINK_MODES = {"link": "Saved link", "page": "Copy of the page", "site": "Copy of the page and the pages under it",
+              "repo": "Copy of the GitHub repository"}
+NOT_DUE = ("gone", "refused", "error")    # links nobody needs reminding about (until they're edited or retried)
+
+
+def parse_iso(s: str | None) -> datetime | None:
+    if not s:
+        return None
+    try:
+        d = datetime.fromisoformat(s)
+    except ValueError:
+        return None
+    return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+
+
+@dataclass
+class Link:
+    id: int
+    system_id: int
+    url: str
+    title: str = ""
+    note: str = ""
+    mode: str = "link"
+    category: str = ""
+    max_pages: int = 100
+    include_files: int = 1
+    branch: str = ""
+    refresh_days: int = 180
+    status: str = ""
+    status_msg: str = ""
+    last_fetched: str | None = None
+    last_checked: str | None = None
+    fail_count: int = 0
+    first_failed: str | None = None
+    version: str = ""
+    created: str = ""
+
+    @property
+    def copies(self) -> bool:
+        return self.mode != "link"
+
+    @property
+    def label(self) -> str:
+        return self.title or self.url
+
+    def next_due(self) -> datetime | None:
+        """When to re-copy (or re-check) it; None = no reminder (switched off, gone, refused, or needs editing)."""
+        if self.refresh_days <= 0 or self.status in NOT_DUE:
+            return None
+        if self.status == "unreachable":          # try again tomorrow
+            return (parse_iso(self.last_checked) or datetime.now(timezone.utc)) + timedelta(days=1)
+        last = parse_iso(self.last_fetched)
+        return last + timedelta(days=self.refresh_days) if last else parse_iso(self.created) or datetime.now(timezone.utc)
+
+    def is_due(self, now: datetime | None = None) -> bool:
+        due = self.next_due()
+        return due is not None and due <= (now or datetime.now(timezone.utc))
 
 
 class Library:
@@ -204,6 +308,10 @@ class Library:
                 c.execute("ALTER TABLE systems ADD COLUMN parent_id INTEGER REFERENCES systems(id) ON DELETE SET NULL")
             if "media_formats" not in cols:   # ... or before disk/tape formats
                 c.execute("ALTER TABLE systems ADD COLUMN media_formats TEXT")
+            dcols = {r["name"] for r in c.execute("PRAGMA table_info(documents)")}
+            if "link_id" not in dcols:        # ... or before links
+                c.execute("ALTER TABLE documents ADD COLUMN link_id INTEGER REFERENCES links(id) ON DELETE SET NULL")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_docs_link ON documents(link_id)")
 
     # ------------------------------------------------------------------ plumbing
     def conn(self) -> sqlite3.Connection:
@@ -267,12 +375,22 @@ class Library:
         key = (name_or_alias or "").strip().lower()
         if not key:
             return None
-        for s in self.systems():
+        systems = self.systems()
+        for s in systems:
             names = {s.name.lower(), s.slug.lower(), str(s.id)}
             names |= {a.strip().lower() for a in s.aliases.split(",") if a.strip()}
             if key in names:
                 return s
-        return None
+        # no exact match (an AI saying "1541" for "1541 Disk Drive"): a whole-word match, preferring the top of a
+        # family (so "1541" picks "1541 Disk Drive" rather than its variant "1541-II")
+        if len(key) < 3:
+            return None
+        pat = re.compile(r"(?<![\w-])" + re.escape(key) + r"(?![\w-])")
+        cands = [s for s in systems if pat.search(s.name.lower()) or
+                 any(pat.search(a.strip().lower()) for a in s.aliases.split(",") if a.strip())]
+        ids = {s.id for s in cands}
+        tops = [s for s in cands if not ({a.id for a in self.ancestors(s.id)} & ids)]
+        return min(tops, key=lambda s: len(s.name)) if tops else None
 
     def system_dir(self, s: System) -> Path:
         return self.root / "systems" / s.slug
@@ -305,21 +423,92 @@ class Library:
                     todo.append(ch.id)
         return out
 
-    def system_scope(self, system_id: int) -> list[int]:
+    def system_scope(self, system_id: int, peripherals: bool = False) -> list[int]:
         """Systems whose documents apply when working with this one: itself, its variants, and the families it
-        belongs to (their documents are common to all variants)."""
-        return [system_id] + [s.id for s in self.ancestors(system_id)] + [s.id for s in self.descendants(system_id)]
+        belongs to (their documents are common to all variants). peripherals=True adds the peripherals and
+        expansions that work with any of those (and theirs in turn: a RAM board for a disk drive...)."""
+        base = [system_id] + [s.id for s in self.ancestors(system_id)] + [s.id for s in self.descendants(system_id)]
+        if not peripherals:
+            return base
+        by_host: dict[int, list[int]] = {}
+        for r in self.conn().execute("SELECT system_id, host_id FROM system_hosts"):
+            by_host.setdefault(r["host_id"], []).append(r["system_id"])
+        if not by_host:
+            return base
+        out, seen, todo = list(base), set(base), list(base)
+        while todo:
+            for p in by_host.get(todo.pop(), []):
+                for x in [p] + [a.id for a in self.ancestors(p)] + [d.id for d in self.descendants(p)]:
+                    if x not in seen:
+                        seen.add(x)
+                        out.append(x)
+                        todo.append(x)
+        return out
 
     def family_label(self, s: System) -> str:
         """'ZX Spectrum 128K (variant of ZX Spectrum)' style description for headers and the AI."""
         anc = self.ancestors(s.id)
         kids = self.children(s.id)
         parts = []
+        hosts = self.effective_hosts(s.id)
+        if hosts:
+            parts.append("a peripheral / expansion for " + ", ".join(h.name for h in hosts) +
+                         " - its own hardware and documentation, and possibly its own CPU and OS")
         if anc:
             parts.append("variant of " + " > ".join(a.name for a in reversed(anc)))
         if kids:
             parts.append("documents here apply to all its variants: " + ", ".join(k.name for k in kids))
         return f"{s.name} ({'; '.join(parts)})" if parts else s.name
+
+    # ------------------------------------------------------------------ peripherals and expansions
+    def hosts(self, system_id: int) -> list[System]:
+        """The machines a peripheral / expansion works with."""
+        rows = self.conn().execute("SELECT s.* FROM system_hosts h JOIN systems s ON s.id=h.host_id "
+                                   "WHERE h.system_id=? ORDER BY s.name COLLATE NOCASE", (system_id,)).fetchall()
+        return [System(**dict(r)) for r in rows]
+
+    def effective_hosts(self, system_id: int) -> list[System]:
+        """Its own hosts, or (for a variant of a peripheral, e.g. 1541-II of 1541) its family's."""
+        for sid in [system_id] + [a.id for a in self.ancestors(system_id)]:
+            h = self.hosts(sid)
+            if h:
+                return h
+        return []
+
+    def peripherals(self, host_id: int) -> list[System]:
+        """Peripherals and expansions attached directly to this system."""
+        rows = self.conn().execute("SELECT s.* FROM system_hosts h JOIN systems s ON s.id=h.system_id "
+                                   "WHERE h.host_id=? ORDER BY s.name COLLATE NOCASE", (host_id,)).fetchall()
+        return [System(**dict(r)) for r in rows]
+
+    def host_map(self) -> dict[int, list[int]]:
+        """{peripheral id: [host ids]}"""
+        out: dict[int, list[int]] = {}
+        for r in self.conn().execute("SELECT system_id, host_id FROM system_hosts"):
+            out.setdefault(r["system_id"], []).append(r["host_id"])
+        return out
+
+    def set_hosts(self, system_id: int, host_ids) -> None:
+        """Make a system a peripheral / expansion of these machines ([] = of none)."""
+        ids: list[int] = []
+        for h in host_ids or []:
+            h = int(h)
+            if h != system_id and h not in ids and self.system(h):
+                ids.append(h)
+        old = {h.id for h in self.hosts(system_id)}
+        if set(ids) == old:
+            return
+        with self.conn() as c:
+            c.execute("DELETE FROM system_hosts WHERE system_id=?", (system_id,))
+            c.executemany("INSERT INTO system_hosts(system_id, host_id) VALUES (?,?)", [(system_id, h) for h in ids])
+        self._touch_family(system_id)      # document headers say what it's a peripheral of
+        self.bump_index_version()
+
+    def add_host(self, system_id: int, host_id: int) -> None:
+        self.set_hosts(system_id, [h.id for h in self.hosts(system_id)] + [host_id])
+
+    def remove_host(self, system_id: int, host_id: int) -> None:
+        self.set_hosts(system_id, [h.id for h in self.hosts(system_id) if h.id != host_id])
 
     def _touch_family(self, system_id: int) -> None:
         """Document headers mention the family / variants: re-index the whole family after a change."""
@@ -360,6 +549,8 @@ class Library:
         if kw.get("parent_id"):
             self.set_parent(sid, int(kw["parent_id"]))
             s = self.system(sid)
+        if kw.get("hosts"):
+            self.set_hosts(sid, kw["hosts"])
         return s
 
     def update_system(self, system_id: int, **kw: Any) -> None:
@@ -369,6 +560,8 @@ class Library:
                 self.set_parent(system_id, kw["parent_id"])
         if "media_formats" in kw:
             self.set_media_formats(system_id, kw["media_formats"])
+        if "hosts" in kw:
+            self.set_hosts(system_id, kw["hosts"])
         allowed = {"name", "manufacturer", "year", "kind", "cpu", "aliases", "notes"}
         sets = {k: v for k, v in kw.items() if k in allowed}
         if not sets:
@@ -589,11 +782,70 @@ class Library:
     def ocr_json_path(self, d: Document) -> Path:
         return self.derived_dir(d) / (Path(d.path).name + ".ocr.json")
 
+    # ------------------------------------------------------------------ links (see webcopy.py)
+    LINK_FIELDS = ("url", "title", "note", "mode", "category", "max_pages", "include_files", "branch", "refresh_days",
+                   "status", "status_msg", "last_fetched", "last_checked", "fail_count", "first_failed", "version",
+                   "system_id")
+
+    def links(self, system_id: int | None = None) -> list[Link]:
+        q, p = "SELECT * FROM links", []
+        if system_id is not None:
+            q += " WHERE system_id=?"
+            p.append(system_id)
+        rows = self.conn().execute(q + " ORDER BY system_id, title COLLATE NOCASE, url", p).fetchall()
+        return [Link(**dict(r)) for r in rows]
+
+    def link(self, link_id: int) -> Link | None:
+        r = self.conn().execute("SELECT * FROM links WHERE id=?", (link_id,)).fetchone()
+        return Link(**dict(r)) if r else None
+
+    def add_link(self, system_id: int, url: str, **kw: Any) -> Link:
+        url = normalise_url(url)
+        vals = {k: v for k, v in kw.items() if k in self.LINK_FIELDS and k not in ("url", "system_id")}
+        if vals.get("mode", "link") not in LINK_MODES:
+            raise ValueError(f"Unknown link mode {vals['mode']!r}")
+        cols = ["system_id", "url", "created", *vals]
+        with self.conn() as c:
+            cur = c.execute(f"INSERT INTO links({', '.join(cols)}) VALUES ({','.join('?' * len(cols))})",
+                            [system_id, url, now_iso(), *vals.values()])
+        return self.link(cur.lastrowid)
+
+    def update_link(self, link_id: int, **kw: Any) -> None:
+        sets = {k: v for k, v in kw.items() if k in self.LINK_FIELDS}
+        if "url" in sets:
+            sets["url"] = normalise_url(sets["url"])
+        if not sets:
+            return
+        with self.conn() as c:
+            c.execute(f"UPDATE links SET {', '.join(f'{k}=?' for k in sets)} WHERE id=?", [*sets.values(), link_id])
+
+    def link_doc_ids(self, link_id: int) -> list[int]:
+        return [r[0] for r in self.conn().execute("SELECT id FROM documents WHERE link_id=?", (link_id,))]
+
+    def delete_link(self, link_id: int, delete_docs: bool = False) -> int:
+        """Remove a link. delete_docs=True also removes the documents copied from it (and their files);
+        otherwise they stay in the library as ordinary documents. -> number of documents removed."""
+        ids = self.link_doc_ids(link_id) if delete_docs else []
+        for did in ids:
+            self.delete_document(did, delete_files=True)
+        with self.conn() as c:
+            c.execute("DELETE FROM links WHERE id=?", (link_id,))
+        return len(ids)
+
+    def links_due(self) -> list[Link]:
+        now = datetime.now(timezone.utc)
+        return [l for l in self.links() if l.is_due(now)]
+
     # ------------------------------------------------------------------ stats
     def stats(self) -> dict[str, Any]:
         c = self.conn()
         one = lambda q: c.execute(q).fetchone()[0]
+        links = self.links()
+        now = datetime.now(timezone.utc)
         return {
+            "links": len(links),
+            "links_due": sum(1 for l in links if l.is_due(now)),
+            "links_gone": sum(1 for l in links if l.status == "gone"),
             "systems": one("SELECT COUNT(*) FROM systems"),
             "documents": one("SELECT COUNT(*) FROM documents"),
             "chunks": one("SELECT COUNT(*) FROM chunks"),

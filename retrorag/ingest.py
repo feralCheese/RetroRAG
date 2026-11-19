@@ -194,11 +194,44 @@ def write_manifest(lib: Library, s: System) -> Path:
             key = str(p)       # linked in place
         docs[key] = {k: getattr(d, k) for k in ("title", "category", "tags", "notes", "source_url", "group_path",
                                                  "text_status")}
+        if d.link_id and (l := lib.link(d.link_id)):
+            docs[key]["link_url"] = l.url
     meta = {k: getattr(s, k) for k in ("name", "manufacturer", "year", "kind", "cpu", "aliases", "notes")}
     if s.parent_id and (par := lib.system(s.parent_id)):
         meta["variant_of"] = par.name
+    extra = {}
+    hosts = [h.name for h in lib.hosts(s.id)]
+    if hosts:
+        extra["works_with"] = hosts
+    links = [{k: getattr(l, k) for k in ("url", "title", "note", "mode", "category", "max_pages", "include_files",
+                                         "branch", "refresh_days", "status", "status_msg", "last_fetched")}
+             for l in lib.links(s.id)]
+    if links:
+        extra["links"] = links
     out = sdir / MANIFEST
-    out.write_text(json.dumps({"system": meta, "documents": docs}, indent=1), "utf-8")
+    out.write_text(json.dumps({"system": meta, "documents": docs, **extra}, indent=1), "utf-8")
+    return out
+
+
+def restore_links(lib: Library, s: System, manifest: dict) -> dict[str, int]:
+    """Bring back a removed system's links and 'works with' machines from its manifest. -> {url: link id}"""
+    out: dict[str, int] = {}
+    have = {l.url: l.id for l in lib.links(s.id)}
+    for l in manifest.get("links", []):
+        url = l.get("url")
+        if not url:
+            continue
+        if url in have:
+            out[url] = have[url]
+            continue
+        try:
+            new = lib.add_link(s.id, url, **{k: v for k, v in l.items() if k != "url"})
+            out[url] = new.id
+        except ValueError:
+            pass
+    hosts = [h.id for n in manifest.get("works_with", []) if (h := lib.find_system(n))]
+    if hosts:
+        lib.set_hosts(s.id, sorted({h.id for h in lib.hosts(s.id)} | set(hosts)))
     return out
 
 
@@ -227,6 +260,7 @@ def import_system_folder(lib: Library, s: System, folder: Path | None = None, pr
     names = {f.as_posix().lower() for f in files}
     files = [f for f in files if not (f.suffix.lower() == ".md" and f.as_posix().lower()[:-3] in names)]
     target_root = lib.system_dir(s)
+    link_ids = restore_links(lib, s, manifest)
     added = []
     for i, f in enumerate(files):
         if cancel and cancel():
@@ -256,6 +290,10 @@ def import_system_folder(lib: Library, s: System, folder: Path | None = None, pr
             continue
         if doc_id:
             upd = {k: meta[k] for k in ("tags", "notes", "source_url") if meta.get(k)}
+            if meta.get("link_url"):
+                lid = link_ids.get(meta["link_url"])
+                if lid:
+                    upd["link_id"] = lid
             if meta.get("text_status") == "reviewed":
                 upd["text_status"] = "reviewed"
             if upd:
