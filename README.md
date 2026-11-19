@@ -3,6 +3,8 @@
 A Windows app (initially) for building a **retrieval (RAG) library of retro computer & console documentation** that Claude
 and other AI systems (including locally hosted ones such as Unsloth Studio, Ollama, LM Studio) can search.
 
+![RetroRAG's main window: the library tree of systems, peripherals and categories on the left, a VIC-20 manual's OCR status and details in the middle, and its scanned cover in the preview](docs/screenshot.webp)
+
 - Organise by **system** (C64, Amiga 500, ZX Spectrum, NES…) and **category**: user guides, programming reference,
   schematics, pinouts, chip datasheets, service & repair, photos, books & magazines, emulator source, firmware &
   ROMs, disk & tape images.
