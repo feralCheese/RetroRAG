@@ -4,6 +4,7 @@ Output for a document  foo.pdf:
     foo.pdf.md        <!-- page N --> blocks; uncertain words written as {?w0rd|42?}
     foo.pdf.ocr.json  per page: image size + every OCR line and word with its bounding box and confidence.
                       The proofreading editor uses this to highlight the current line/word on the scan.
+                      "binding": {"left"/"right": px} records page-edge strips blanked as binding marks.
 """
 from __future__ import annotations
 
@@ -157,18 +158,73 @@ def ocr_image(img, lang: str = "eng", psm: int = 3, threshold: int = 70,
     return "\n".join(md_lines).strip(), page
 
 
+def is_real_word(text: str, conf: float) -> bool:
+    """A word or number Tesseract read confidently - not binding holes read as 'TT', 'Yt' or '{='.
+    Numbers count too: a contents page's column of page numbers can sit right next to the rings."""
+    if conf < 80:
+        return False
+    t = text.strip(".,:;!?()[]{}'\"")
+    if t.isdigit():
+        return conf >= 85
+    letters = sum(ch.isalpha() for ch in t)
+    return len(t) >= 3 and letters >= 0.75 * len(t) and len(set(t.lower())) >= 2
+
+
+def _real_words_at_edge(g, side: str, width: int, lang: str) -> list[int]:
+    """OCR just one edge strip; -> distance from the page edge of each real word in it (empty for binding junk)."""
+    import pytesseract
+    from PIL import ImageOps
+    from .binding import paper_level
+    pad = 20
+    box = (0, 0, width, g.height) if side == "left" else (g.width - width, 0, g.width, g.height)
+    crop = ImageOps.expand(g.crop(box), border=pad, fill=paper_level(g))   # paper colour: grey pages stay readable
+    data = pytesseract.image_to_data(crop, lang=lang, config="--psm 6", output_type=pytesseract.Output.DICT)
+    out = []
+    for i, txt in enumerate(data["text"]):
+        txt = (txt or "").strip()
+        if data["level"][i] == 5 and txt and is_real_word(txt, float(data["conf"][i])):
+            x0 = data["left"][i] - pad
+            out.append(x0 if side == "left" else width - (x0 + data["width"][i]))
+    return out
+
+
+def binding_strips(g, lang: str) -> dict[str, int]:
+    """Edge strips of a prepared page image to blank before OCR: ring/comb binding marks and spine shadows
+    (see binding.py). Each strip is OCR'd on its own first: if Tesseract reads real words there it is margin text,
+    so only the binding bands nearer the edge than those words are blanked. -> {"left": px, "right": px}."""
+    from .binding import find_binding
+    out: dict[str, int] = {}
+    for side, cuts in find_binding(g).items():
+        if not cuts:
+            continue
+        words = _real_words_at_edge(g, side, cuts[-1], lang)
+        if words:
+            cuts = [c for c in cuts if c <= min(words)]
+        if cuts:
+            out[side] = cuts[-1]
+    return out
+
+
 def ocr_best(img, upscale: bool, cleanup: str, lang: str, psm: int, threshold: int,
-             drop_graphics: bool = True) -> tuple[str, dict]:
+             drop_graphics: bool = True, ignore_binding: bool = True) -> tuple[str, dict]:
     """OCR with the chosen cleanup; 'auto' tries no cleanup first and retries poor pages with strong cleanup,
-    keeping whichever result Tesseract is more confident about."""
+    keeping whichever result Tesseract is more confident about. ignore_binding blanks ring binding marks and
+    spine shadows at the page edges first (recorded in the page json as "binding": {side: width})."""
+    from .binding import blank_edges
     first = "none" if cleanup == "auto" else cleanup
-    body, pj = ocr_image(prepare(img, upscale, first), lang, psm, threshold, drop_graphics)
+    g = prepare(img, upscale, first)
+    strips = binding_strips(g, lang) if ignore_binding else {}
+    lr = strips.get("left", 0), strips.get("right", 0)
+    body, pj = ocr_image(blank_edges(g, *lr), lang, psm, threshold, drop_graphics)
     pj["cleanup"] = first
     if cleanup == "auto" and (pj["mean_conf"] or 0) < AUTO_RETRY_BELOW:
-        body2, pj2 = ocr_image(prepare(img, upscale, "strong"), lang, psm, threshold, drop_graphics)
+        body2, pj2 = ocr_image(blank_edges(prepare(img, upscale, "strong"), *lr), lang, psm, threshold,
+                               drop_graphics)
         if (pj2["mean_conf"] or 0) > (pj["mean_conf"] or 0):
             body, pj = body2, pj2
             pj["cleanup"] = "strong"
+    if strips:
+        pj["binding"] = strips
     return body, pj
 
 
@@ -258,7 +314,7 @@ def ocr_document(lib: Library, d: Document, *, pages: list[int] | None = None, f
     todo = pages or list(range(1, total + 1))
     js = load_ocr_json(lib, d)
     js.update({"engine": "tesseract", "threshold": st.low_conf_threshold, "updated": now_iso()})
-    done = 0
+    done = bound = 0
     for n, img in page_images(lib, d, todo, st.ocr_dpi):
         if cancel and cancel():
             log("OCR cancelled - pages done so far were kept.")
@@ -266,7 +322,10 @@ def ocr_document(lib: Library, d: Document, *, pages: list[int] | None = None, f
         if progress:
             progress(done, len(todo), f"{d.title}: OCR page {n}")
         body, pj = ocr_best(img, st.ocr_upscale_small_images and d.kind == "image", cleanup,
-                            st.ocr_language, psm, st.low_conf_threshold, st.ocr_drop_graphics)
+                            st.ocr_language, psm, st.low_conf_threshold, st.ocr_drop_graphics,
+                            st.ocr_ignore_binding)
+        if pj.get("binding"):
+            bound += 1
         existing[n] = body if body else "<!-- OCR found no text on this page -->"
         js["pages"][str(n)] = pj
         done += 1
@@ -283,8 +342,9 @@ def ocr_document(lib: Library, d: Document, *, pages: list[int] | None = None, f
                         flagged=flagged, ocr_mean_conf=round(sum(confs) / len(confs), 1) if confs else None,
                         text_updated=now_iso())
     log(f"OCR {d.title}: {done} page(s), mean confidence {confs and round(sum(confs) / len(confs), 1)}, "
-        f"{flagged} low-confidence word(s) flagged.")
-    return {"pages": done, "flagged": flagged}
+        f"{flagged} low-confidence word(s) flagged."
+        + (f" Binding marks / spine shadow ignored on {bound} page(s)." if bound else ""))
+    return {"pages": done, "flagged": flagged, "binding_pages": bound}
 
 
 def _write(lib: Library, d: Document, md_path: Path, pages: dict[int, str], js: dict) -> None:

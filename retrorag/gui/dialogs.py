@@ -353,7 +353,15 @@ class SettingsDialog(QDialog):
         self.drop_gfx = QCheckBox("Ignore drawing shapes that OCR mistakes for words (schematics, pinouts)")
         self.drop_gfx.setChecked(st.ocr_drop_graphics)
         f.addRow(self.drop_gfx)
-        self.upscale = QCheckBox("Upscale small images before OCR"); self.upscale.setChecked(st.ocr_upscale_small_images)
+        self.binding = QCheckBox("Ignore ring binding, comb holes and spine shadows at the page edges")
+        self.binding.setToolTip("Scanned manuals with ring, wire or comb binding have a column of holes down one "
+                                "edge, which OCR reads as junk like 'TT' or '{='. When this is on, those marks (and "
+                                "dark spine or scanner-lid shadows at the edge) are blanked before OCR. Margin text "
+                                "that Tesseract can read is never removed. The proofreading editor shades what "
+                                "was ignored.")
+        self.binding.setChecked(st.ocr_ignore_binding)
+        f.addRow(self.binding)
+        self.upscale =QCheckBox("Upscale small images before OCR"); self.upscale.setChecked(st.ocr_upscale_small_images)
         f.addRow(self.upscale)
         self.min_chars = QSpinBox(); self.min_chars.setRange(0, 1000); self.min_chars.setValue(st.pdf_min_text_chars)
         f.addRow("PDF page counts as scanned if text <", self.min_chars)
@@ -517,6 +525,7 @@ class SettingsDialog(QDialog):
         st.ocr_psm = int(self.psm.currentData())
         st.ocr_upscale_small_images = self.upscale.isChecked()
         st.ocr_drop_graphics = self.drop_gfx.isChecked()
+        st.ocr_ignore_binding = self.binding.isChecked()
         st.ocr_cleanup = self.cleanup.currentData()
         st.pdf_min_text_chars = self.min_chars.value()
         st.embed_provider = self.provider.currentText()

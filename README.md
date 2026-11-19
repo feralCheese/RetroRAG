@@ -9,7 +9,8 @@ and other AI systems (including locally hosted ones such as Unsloth Studio, Olla
 - Add **PDF, GIF, JPG, PNG, TIFF, BMP, TXT, MD, HTML, RTF, Word (DOC/DOCX), Excel (XLS/XLSX), source code, ROMs, disk/tape images, ZIPs**, or whole folders
   (e.g. an emulator's source tree). Drag & drop onto a system or category.
 - **OCR** (Tesseract) turns scans into editable Markdown. Words below a confidence threshold are marked
-  `{?w0rd|42?}` so you can find and fix them.
+  `{?w0rd|42?}` so you can find and fix them. Ring, wire and comb binding marks and spine shadows at the page
+  edges are found and ignored automatically.
 - **Proofreading editor**: scan on the left, text on the right. The current line and word are highlighted on the scan.
 - **Binary files get an "info card"**: CRC32/MD5/SHA1, format, iNES/Game Boy/Mega Drive headers, and embedded
   text strings from ROMs. An AI can then answer "which Kickstart is this?".
@@ -85,6 +86,13 @@ Windows 11-style light and dark themes using the Segoe Fluent icon set. *View �
    - **Moving a misfiled document:** right-click → *Move to system…*, drag it onto another system or category in the tree, or change **System** on the Document tab and click *Save details*. The file moves on disk together with its OCR text, corrections and links.
 3. **🔤 Run OCR** on scanned PDFs and images. PDFs with a text layer are extracted directly; only pages without
    text are OCR'd, and *Force OCR* re-does every page.
+   - **Ring-bound and comb-bound manuals:** the column of holes, rings or comb teeth down one edge of each page,
+     and dark spine or scanner-lid shadows at the edge, are blanked before OCR so they don't turn into junk like
+     `TT`, `Yt` or `{=`. They're recognised by shape: they start at the edge of the paper, are separated from the
+     text by a white margin, and repeat at a fixed spacing (or form one long dark band). Each strip is checked
+     with Tesseract first, so margin text it can read is never removed. The proofreading editor hatches what was
+     ignored. Turn it off in Settings → OCR → *Ignore ring binding…*. Documents OCR'd before this need *Re-run
+     OCR* to benefit.
 4. **Proofread** (double-click a document):
 
    | Key | Action |
@@ -383,6 +391,9 @@ Add `--library <folder>` to any command to use a library other than the last-ope
 ## Notes and limits
 - OCR quality depends on the scan. Schematics and pinout diagrams are mostly graphics, so add **notes and tags**
   to those documents: they're indexed and searchable.
+- Binding marks are only removed at the left and right edges, and only where a white margin separates them from
+  the text. Text curving into the spine of a book scanned flat, and two-page spreads with the spine in the
+  middle, aren't handled.
 - Semantic search loads all vectors into memory. That's fine for hundreds of thousands of chunks. Indexing a
   very large source tree (e.g. all of MAME) is slow to embed, so consider adding just the relevant drivers and
   devices.

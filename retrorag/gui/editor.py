@@ -811,6 +811,22 @@ class ProofEditor(QWidget):
         self._static_overlay = self.view.overlay[before:]
         self._flags_key = (n, self._align_cache.get(n, ("",))[0])
 
+    def _draw_binding(self, pj: dict | None):
+        """Hatch the page-edge strips OCR ignored as binding marks or spine shadow (stays until the page changes)."""
+        strips = (pj or {}).get("binding") or {}
+        if not strips or not self.view.pix_item:
+            return
+        s, w, h = self.view.scale_factor, pj.get("width", 0), pj.get("height", 0)
+        col = QColor(theme.T["accent"]) if theme.is_retro() else QColor(110, 110, 160)
+        col.setAlpha(150)
+        for side, px in strips.items():
+            x0 = 0 if side == "left" else w - px
+            it = self.view.scene().addRect(QRectF(x0 * s, 0, px * s, h * s), QPen(Qt.NoPen),
+                                           QBrush(col, Qt.BDiagPattern))
+            it.setZValue(3)
+            it.setToolTip("Ignored by OCR: ring binding, comb holes or spine shadow at the page edge.\n"
+                          "(Settings → OCR → Ignore ring binding…)")
+
     def _show_page(self, n: int):
         if not self.has_pages or n == self.cur_page:
             return
@@ -826,6 +842,7 @@ class ProofEditor(QWidget):
         self._last_loc = None
         self.view.set_image(self._img_cache[n], pj.get("width") if pj else None)
         self._static_overlay = []              # set_image cleared the scene
+        self._draw_binding(pj)
         self._draw_flag_boxes(n)
         if hasattr(self, "page_spin"):
             self.page_spin.blockSignals(True)
