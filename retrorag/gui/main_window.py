@@ -202,7 +202,7 @@ class MainWindow(QMainWindow):
                        "OCR the selected documents (or every document that needs it)", "scan")
         self.a_index = A("Build index", lambda: self.build_index(False), "F5", "Chunk + embed new/changed documents", "sync")
         self.a_servers = A("Start servers", self.toggle_servers, None, "Start REST API + MCP HTTP servers", "play")
-        self.a_connect = A("Connect AI", self.show_connect, None, "How to connect Claude, Unsloth Studio, LM Studio…", "link")
+        self.a_connect = A("Connect AI", self.show_connect, None, "How to connect Claude, opencode, Unsloth Studio, LM Studio…", "link")
         self.a_settings = A("Settings", self.show_settings, "Ctrl+,", None, "settings")
 
         tb = QToolBar("Main"); tb.setObjectName("main_toolbar"); tb.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
@@ -467,7 +467,7 @@ class MainWindow(QMainWindow):
             step(4, "Proofread", "Double-click a document. <b>F3</b> selects the next flagged word - type the fix - "
                  "<b>Ctrl+Enter</b> accepts it and moves on. The scan highlights the line &amp; word you're on."),
             step(5, "Build index (F5)", "Chunks and embeds everything new or changed. Try queries in <b>Search test</b>."),
-            step(6, "Connect AI", "Claude Desktop / Claude Code (MCP), Unsloth Studio &amp; other MCP clients (HTTP), "
+            step(6, "Connect AI", "Claude Desktop / Claude Code / opencode (MCP), Unsloth Studio &amp; other MCP clients (HTTP), "
                  "REST/OpenAPI.")])
         self.home.setHtml(f"""
 <div style='color:{t['text']}'>

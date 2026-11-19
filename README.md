@@ -31,7 +31,7 @@ and other AI systems (including locally hosted ones such as Unsloth Studio, Olla
   sites that have gone.
 - **Hybrid search**: keyword (BM25, with hex-address normalisation so `$D020`, `0xD020` and `D020h` all match)
   plus semantic (embeddings), merged by rank fusion.
-- **Connect AI**: MCP for Claude Desktop / Claude Code (stdio); MCP over HTTP for Unsloth Studio, LM Studio,
+- **Connect AI**: MCP for Claude Desktop, Claude Code and opencode (stdio); MCP over HTTP for Unsloth Studio, LM Studio,
   Open WebUI, Cursor and others; a REST API with OpenAPI spec; export as a Markdown corpus or JSONL.
 - **Portable**: the library is a self-contained folder using relative paths, and there's a portable mode plus a
   standalone `.exe` build.
@@ -49,7 +49,7 @@ and other AI systems (including locally hosted ones such as Unsloth Studio, Olla
 ### Option B: standalone build (no Python needed on the target PC)
 Run **`build_exe.bat`** on any PC that has the source set up. It produces `dist\RetroRAG\` containing:
 - `RetroRAG.exe`: the app.
-- `retrorag-cli.exe`: the console version, used by Claude Desktop / Claude Code and for scripting.
+- `retrorag-cli.exe`: the console version, used by Claude Desktop, Claude Code and opencode, and for scripting.
 - `portable.flag`: settings and the default library live inside the folder.
 - Optionally a bundled `Tesseract-OCR\` folder, so OCR works without installing anything.
 
@@ -256,6 +256,7 @@ Start the HTTP servers with **▶ Start servers** in the toolbar. You can make t
 |---|---|
 | **Claude Desktop** | Connect AI → *Add to Claude Desktop* (edits `claude_desktop_config.json` and keeps a `.bak`), then restart Claude. |
 | **Claude Code** | Connect AI → copy the `claude mcp add retrorag …` command. |
+| **opencode** | Connect AI → *Add to opencode* (adds RetroRAG to `~/.config/opencode/opencode.json` for all your projects, keeping a `.bak`), or copy the `opencode mcp add --global retrorag …` command. A running opencode picks it up by itself; `/mcps` shows it connected. If your opencode config has comments, *Add to opencode* leaves it alone and gives you the command instead, which keeps them. |
 | **Unsloth Studio** | Chat → MCP → *Add custom MCP*: URL `http://127.0.0.1:8766/mcp` (or this PC's IP address from another PC). If you set an access token: *Add header*, header name `Authorization`, value `Bearer <token>` (Connect AI → *Copy header value*). Turn on *Use MCP Servers*. |
 | LM Studio, Open WebUI, Cursor, Continue, Jan… | MCP over HTTP: `http://127.0.0.1:8766/mcp` |
 | Open WebUI (OpenAPI tools), scripts | REST: `http://127.0.0.1:8765/search?q=...&system=C64`, docs at `/docs`, spec at `/openapi.json` |
@@ -379,7 +380,7 @@ re-embeds everything on the next build.
   library* before moving the library.
 - **Portable mode** (`portable.flag` next to the app) keeps app settings in `.\settings` and the default library
   in `.\Library`, so the app folder plus library can live on a USB drive.
-- After moving to a new PC or path, open *Connect AI* again and re-add to Claude Desktop, since the paths differ.
+- After moving to a new PC or path, open *Connect AI* again and re-add to Claude Desktop or opencode, since the paths differ.
 
 ### Removing a system
 *System → Remove selected system…* offers:
@@ -503,7 +504,7 @@ let the Pi answer the AI.
    ```
 
    That serves REST on `:8765` and MCP on `:8766/mcp`.
-5. Point Unsloth Studio, Claude Code, LM Studio and other clients at `http://retropi:8766/mcp` with the header
+5. Point Unsloth Studio, Claude Code, opencode, LM Studio and other clients at `http://retropi:8766/mcp` with the header
    `Authorization: Bearer <token>`.
 
 To start it automatically at boot, save the following as `/etc/systemd/system/retrorag.service`, then run

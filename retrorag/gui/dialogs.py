@@ -660,7 +660,7 @@ class ConnectDialog(QDialog):
         super().__init__(parent)
         self.lib = lib
         self.setWindowTitle("Connect AI tools")
-        self.resize(780, 620)
+        self.resize(800, 700)
         st = lib.settings
         v = QVBoxLayout(self)
         cmd, args, env = mcp_command(lib)
@@ -687,8 +687,16 @@ class ConnectDialog(QDialog):
             uns_rows.append(row.format("&nbsp;&nbsp;header value", f"<code>Bearer {st.api_token}</code> &nbsp;"
                                        "(the word Bearer, a space, then the token)"))
         uns_table = "<table cellspacing=2>" + "".join(uns_rows) + "</table>"
+        # "--" quoted: PowerShell drops a bare -- on its way to an npm-installed command's .ps1 launcher
         claude_code = "claude mcp add retrorag --scope user " + " ".join(
-            [f'-e {k}="{v}"' for k, v in env.items()] + ["--", f'"{cmd}"'] + [f'"{a}"' if " " in a else a for a in args])
+            [f'-e {k}="{v}"' for k, v in env.items()] + ['"--"', f'"{cmd}"'] + [f'"{a}"' if " " in a else a for a in args])
+        from ..ai_clients import opencode_command, opencode_config_file, opencode_http_command
+        self.mcp = (cmd, args, env)
+        self.oc_cmd = opencode_command(cmd, args, env)
+        from html import escape
+        oc_file = escape(str(opencode_config_file()).replace(str(Path.home()), "~"))
+        oc_remote = (f"<p>opencode on another PC: <code>{escape(opencode_http_command(lan_url, st.api_token))}</code></p>"
+                     if lan_url else "")
         state = ("<span style='color:green'>running</span>" if servers_running
                  else "<span style='color:#c60'>not running - click <b>Start servers</b> in the toolbar</span>")
         html = f"""
@@ -697,6 +705,11 @@ class ConnectDialog(QDialog):
 Or paste this into <code>claude_desktop_config.json</code> under <code>"mcpServers"</code>:</p>
 <pre>{json.dumps({"retrorag": entry}, indent=2)}</pre>
 <h3>Claude Code</h3><pre>{claude_code}</pre>
+<h3>opencode</h3>
+<p>Click <b>Add to opencode</b> below. It adds RetroRAG to <code>{oc_file}</code>, for all your projects, and keeps a
+<code>.bak</code>. Or run this in a terminal:</p>
+<pre>{escape(self.oc_cmd)}</pre>
+<p>A running opencode picks it up by itself: <code>/mcps</code> shows it connected.</p>{oc_remote}
 <h3>Unsloth Studio</h3>
 <p>HTTP servers are {state}. In Studio chat: <b>MCP → Add custom MCP</b>, then fill in:</p>
 {uns_table}
@@ -726,10 +739,16 @@ to get the right paths.</p>"""
         b4.clicked.connect(lambda: QApplication.clipboard().setText(lan_url or mcp_url))
         if lan_url:
             b4.setToolTip(f"Copies the network address ({lan_url}), which works from this PC and others")
-        for b in (b1, b2, b3):            # Claude on the first row, HTTP clients (Unsloth etc.) on the second
+        for b in (b1, b2, b3):            # Claude, then opencode, then HTTP clients (Unsloth etc.)
             h.addWidget(b)
         h.addStretch()
         v.addLayout(h)
+        ho = QHBoxLayout()
+        b6 = QPushButton("Add to opencode"); b6.clicked.connect(self.install_opencode)
+        b7 = QPushButton("Copy opencode command")
+        b7.clicked.connect(lambda: QApplication.clipboard().setText(self.oc_cmd))
+        ho.addWidget(b6); ho.addWidget(b7); ho.addStretch()
+        v.addLayout(ho)
         h2 = QHBoxLayout()
         h2.addWidget(b4)
         if self.header_value:
@@ -767,3 +786,19 @@ to get the right paths.</p>"""
         if done:
             QMessageBox.information(self, "Claude Desktop", "Added 'retrorag' to:\n" + "\n".join(done) +
                                     "\n\n(backup saved as .json.bak)\nRestart Claude Desktop to load it.")
+
+    def install_opencode(self):
+        from ..ai_clients import SetupError, install_opencode
+        QApplication.setOverrideCursor(Qt.WaitCursor)      # asks the opencode command for its version
+        try:
+            path, bak = install_opencode(*self.mcp)
+        except SetupError as e:
+            QApplication.restoreOverrideCursor()
+            QApplication.clipboard().setText(self.oc_cmd)
+            QMessageBox.warning(self, "opencode", f"{e}\n\nInstead, paste this command into a terminal (it's on the "
+                                f"clipboard):\n\n{self.oc_cmd}")
+            return
+        QApplication.restoreOverrideCursor()
+        QMessageBox.information(self, "opencode", f"Added 'retrorag' to:\n{path}" +
+                                (f"\n\n(backup saved as {bak.name})" if bak else "") +
+                                "\n\nA running opencode loads it by itself; /mcps in opencode shows it connected.")
