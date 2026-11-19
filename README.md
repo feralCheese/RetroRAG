@@ -4,10 +4,13 @@ A Windows app (initially) for building a **retrieval (RAG) library of retro comp
 and other AI systems (including locally hosted ones such as Unsloth Studio, Ollama, LM Studio) can search.
 
 - Organise by **system** (C64, Amiga 500, ZX Spectrum, NES…) and **category**: user guides, programming reference,
-  schematics, pinouts, chip datasheets, service & repair, books & magazines, emulator source, firmware & ROMs,
-  disk & tape images.
+  schematics, pinouts, chip datasheets, service & repair, photos, books & magazines, emulator source, firmware &
+  ROMs, disk & tape images.
 - Add **PDF, GIF, JPG, PNG, TIFF, BMP, TXT, MD, HTML, RTF, Word (DOC/DOCX), Excel (XLS/XLSX), source code, ROMs, disk/tape images, ZIPs**, or whole folders
-  (e.g. an emulator's source tree). Drag & drop onto a system or category.
+  (e.g. an emulator's source tree). Drag & drop onto a system or category. Each file's category is guessed
+  from its type, so a manual, a photo of the card and its driver disk added together each land in the right place.
+- **The AI can look at pages and photos** (Claude, and other clients that pass pictures on): schematics, pinout
+  diagrams, chip markings and jumpers on a board photo, zooming in to read small print.
 - **OCR** (Tesseract) turns scans into editable Markdown. Words below a confidence threshold are marked
   `{?w0rd|42?}` so you can find and fix them. Ring, wire and comb binding marks and spine shadows at the page
   edges are found and ignored automatically.
@@ -76,9 +79,22 @@ Windows 11-style light and dark themes using the Segoe Fluent icon set. *View �
 ## Workflow
 
 1. **➕ System**: name, aliases (`C64, CBM 64`, used for search filters), manufacturer, year, CPU, notes.
-2. **Add files / Add folder** (or drag & drop). Choose the category. *Copy into library* (the default) keeps the
-   library self-contained. For folders you can choose which file types to include; for emulator source the
-   default is text and code only.
+2. **Add files / Add folder** (or drag & drop). *Copy into library* (the default) keeps the library
+   self-contained. For folders you can choose which file types to include; for emulator source the default is
+   text and code only.
+   - **Categories are per file.** *Add files* lists each file with its type and a category guessed from it, which
+     you can change: PDFs and documents go to *User Guides & Manuals*, or to *Schematics*, *Service & Repair*,
+     *Chip Datasheets*, *Pinouts* or *Programming Reference* when the name says so ("A500 schematic.pdf",
+     "520ST Service Manual.pdf"). Disk and tape images go to *Disk & Tape Images* and ROMs to *Firmware & ROMs*.
+     Pictures are looked at: photos (a camera or phone picture of a board or machine) go to *Photos*, scans and
+     drawings to *Schematics*. *Set every file to…* puts them all in one category, and dropping files onto a
+     category in the tree does the same.
+   - **Zips** are looked inside: a zip holding a disk image goes to *Disk & Tape Images*. A zip of mixed things
+     gets *By file type*: each file in it goes to its own category, in a folder named after the zip. *Add folder*
+     offers *By file type* too.
+   - **Photos** aren't queued for OCR (a board photo gives a few chip numbers at best, and junk), but you can
+     still OCR one with *Run OCR*. Describe a photo in its **Notes** ("A2091 rev 5, 2 MB fitted, J201 open"), so
+     search finds it, and the AI can look at it (see [Connecting AI systems](#connecting-ai-systems)).
    - **Variants:** a system can be a variant of another (*Variant of* in the system dialog, *Add variant…* on a system's right-click menu, or drag one system onto another). Put shared documentation on the family (e.g. *ZX Spectrum*) and only the extra material on each variant (*48K*, *128K*, *+3*). Variants can nest, e.g. *ZX Spectrum → 128K → +3*.
      - **Searching a variant** (in Search test or by the AI) returns its own documents plus everything common from its family. Searching the family returns all of them.
      - **Removing a family** keeps its variants; they move up a level.
@@ -247,8 +263,17 @@ Start the HTTP servers with **▶ Start servers** in the toolbar. You can make t
 
 MCP tools: `search_docs(query, system?, category?, limit, mode, include_peripherals)`, `list_systems` (with each
 system's variants, peripherals and links), `list_documents`, `read_document(doc_id, page_from?, page_to?)`,
-`get_related(doc_id)`, `get_context(chunk_id)`, and `add_note(system, title, text, tags?)` for when you ask the AI
-to note something down.
+`view_page(doc_id, page?, region?)`, `get_related(doc_id)`, `get_context(chunk_id)`, and
+`add_note(system, title, text, tags?)` for when you ask the AI to note something down.
+
+**Pictures.** `view_page` shows the AI a page of a scan or PDF, or a picture, as an image. That's for what OCR
+can't give: schematics, pinout diagrams, tables, and photos of boards (chip markings, jumper and switch
+settings). `region=[left, top, right, bottom]`, as fractions of the page, zooms in and renders that part sharper
+to read small print. Each picture costs the AI about 1,500 tokens. Claude (Desktop, Code and claude.ai) sees the
+pictures. Not every local app passes pictures from tools on to the model: LM Studio, for one, keeps them but
+doesn't show them to the model ([lmstudio-bug-tracker#1596](https://github.com/lmstudio-ai/lmstudio-bug-tracker/issues/1596)),
+and OpenAI-style chat APIs often drop them. Those models get only the caption, which tells them to use
+`read_document` for the OCR text instead.
 
 Disk and tape images:
 
@@ -372,6 +397,7 @@ re-embeds everything on the next build.
 Use `retrorag-cli` on Windows and `./retrorag-cli.sh` on Linux, macOS or a Pi.
 ```
 retrorag-cli stats
+retrorag-cli add --system "Amiga A2091" manual.pdf card.jpg driver.adf   # category guessed per file
 retrorag-cli add --system "Commodore 64" --category "Schematics" C:\scans\c64_schematic.gif
 retrorag-cli ocr                         # OCR everything that needs it
 retrorag-cli index [--all]
@@ -390,7 +416,11 @@ Add `--library <folder>` to any command to use a library other than the last-ope
 
 ## Notes and limits
 - OCR quality depends on the scan. Schematics and pinout diagrams are mostly graphics, so add **notes and tags**
-  to those documents: they're indexed and searchable.
+  to those documents: they're indexed and searchable. An AI that can see pictures can also look at them with
+  `view_page`.
+- Category guesses come from file names, types and a quick look at pictures. A scanned page saved as a colour
+  photo can be taken for a photo, and a PDF whose name doesn't say what it is goes to *User Guides & Manuals*:
+  change it in *Add files*, or move it later.
 - Binding marks are only removed at the left and right edges, and only where a white margin separates them from
   the text. Text curving into the spine of a book scanned flat, and two-page spreads with the spine in the
   middle, aren't handled.

@@ -219,6 +219,7 @@ CATEGORIES = [
     "Pinouts",
     "Chip Datasheets",
     "Service & Repair",
+    "Photos",
     "Books & Magazines",
     "Emulator Source",
     "Firmware & ROMs",

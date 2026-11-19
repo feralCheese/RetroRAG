@@ -9,9 +9,10 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
-                               QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPlainTextEdit,
-                               QPushButton, QRadioButton, QSpinBox, QTabWidget, QTextBrowser, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
+                               QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
+                               QMessageBox, QPlainTextEdit, QPushButton, QRadioButton, QSpinBox, QTableWidget,
+                               QTableWidgetItem, QTabWidget, QTextBrowser, QVBoxLayout, QWidget)
 
 from ..config import CATEGORIES, EMBED_PRESETS, SYSTEM_KINDS, AppSettings, LibrarySettings, app_root, is_portable
 from ..library import Library, System
@@ -228,30 +229,87 @@ class MoveDialog(QDialog):
 
 
 # =========================================================================== add files
+BY_TYPE_TIP = ("Each file goes under its own type's category: documents to User Guides & Manuals (or Schematics, "
+               "Service & Repair... when the name says so), photos to Photos, disk images to Disk & Tape Images, "
+               "source code to Emulator Source...")
+
+
+def category_box(value: str, by_type: bool = False) -> QComboBox:
+    """Editable category chooser (type a new name to make a new category). by_type adds 'By file type'."""
+    from ..categorize import BY_TYPE
+    cb = QComboBox(); cb.setEditable(True)
+    if by_type:
+        cb.addItem(BY_TYPE)
+        cb.setItemData(0, BY_TYPE_TIP, Qt.ToolTipRole)
+    cb.addItems(CATEGORIES)
+    cb.setCurrentText(value)
+    return cb
+
+
 class AddDialog(QDialog):
-    """Choose category / copy-vs-link / file kinds for files or a folder being added."""
+    """Choose the system, each file's category (guessed from its type) and copy-vs-link for files being added;
+    or the category and file kinds for a folder."""
 
     def __init__(self, parent, systems: list[System], system: System | None, paths: list[Path], folder: bool):
         super().__init__(parent)
+        from ..categorize import BY_TYPE, SOURCE, inspect_file
+        self.folder, self.paths = folder, list(paths)
         self.setWindowTitle("Add folder" if folder else "Add files")
-        self.setMinimumWidth(520)
+        self.setMinimumWidth(520 if folder else 760)
         f = QFormLayout(self)
-        names = "\n".join(str(p) for p in paths[:8]) + (f"\n… and {len(paths) - 8} more" if len(paths) > 8 else "")
-        lbl = QLabel(names); lbl.setStyleSheet("color:gray"); lbl.setWordWrap(True)
-        f.addRow("Adding", lbl)
         self.system = QComboBox()
         for s in systems:
             self.system.addItem(s.name, s.id)
         if system:
             self.system.setCurrentIndex(max(0, self.system.findData(system.id)))
-        f.addRow("System", self.system)
-        self.category = QComboBox(); self.category.setEditable(True); self.category.addItems(CATEGORIES)
-        self.category.setCurrentText(self._guess_category(paths, folder))
-        f.addRow("Category", self.category)
-        self.copy = QCheckBox("Copy into the library (recommended - keeps the library self-contained & portable)")
+        self.rows: list[tuple[Path, QComboBox]] = []
+        self.kinds = {}
+        if folder:
+            lbl = QLabel(str(paths[0])); lbl.setStyleSheet("color:gray"); lbl.setWordWrap(True)
+            f.addRow("Adding", lbl)
+            f.addRow("System", self.system)
+            self.category = category_box(SOURCE, by_type=True)
+            self.category.setToolTip("Every file in the folder goes under this category - or choose 'By file type' "
+                                     "for a folder of mixed things (manuals, photos, disk images...).")
+            f.addRow("Category", self.category)
+        else:
+            f.addRow("System", self.system)
+            QApplication.setOverrideCursor(Qt.WaitCursor)          # zips and pictures are looked inside
+            try:
+                guesses = [inspect_file(p) for p in paths]
+            finally:
+                QApplication.restoreOverrideCursor()
+            self.table = QTableWidget(len(paths), 3)
+            self.table.setHorizontalHeaderLabels(["File", "Type", "Category"])
+            self.table.verticalHeader().setVisible(False)
+            self.table.setSelectionMode(QAbstractItemView.NoSelection)
+            self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+            for r, (p, (cat, what)) in enumerate(zip(paths, guesses)):
+                it = QTableWidgetItem(p.name); it.setToolTip(str(p))
+                self.table.setItem(r, 0, it)
+                self.table.setItem(r, 1, QTableWidgetItem(what))
+                cb = category_box(cat, by_type=what.startswith("ZIP"))
+                cb.setToolTip("Guessed from the file's type and name - change it if it's wrong."
+                              + ("\n'By file type' files each file in the zip under its own type's category."
+                                 if what.startswith("ZIP") else ""))
+                self.table.setCellWidget(r, 2, cb)
+                self.rows.append((p, cb))
+            hh = self.table.horizontalHeader()
+            hh.setSectionResizeMode(0, QHeaderView.Stretch)
+            hh.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+            hh.setSectionResizeMode(2, QHeaderView.Interactive)
+            self.table.setColumnWidth(2, 230)
+            self.table.setMinimumHeight(min(420, 60 + 30 * len(paths)))
+            f.addRow(self.table)
+            self.all = QComboBox(); self.all.addItem("Set every file to…"); self.all.addItems(CATEGORIES)
+            self.all.activated.connect(lambda i: i and self.set_all(self.all.itemText(i)))
+            note = QLabel("Each file's category is guessed from its type and name.")
+            note.setStyleSheet("color:gray")
+            h = QHBoxLayout(); h.addWidget(note, 1); h.addWidget(self.all)
+            f.addRow(h)
+        self.copy = QCheckBox("Copy into the library (recommended - keeps the library self-contained and portable)")
         self.copy.setChecked(True)
         f.addRow("", self.copy)
-        self.kinds = {}
         if folder:
             box = QGroupBox("Include file types")
             h = QHBoxLayout(box)
@@ -265,6 +323,13 @@ class AddDialog(QDialog):
         bb.accepted.connect(self.accept); bb.rejected.connect(self.reject)
         f.addRow(bb)
 
+    def set_all(self, category: str):
+        """Put every file under one category (e.g. files dropped onto a category in the library tree)."""
+        if self.folder:
+            self.category.setCurrentText(category)
+        for _, cb in self.rows:
+            cb.setCurrentText(category)
+
     def _cat_changed(self, cat: str):
         if not self.kinds:
             return
@@ -272,26 +337,14 @@ class AddDialog(QDialog):
         self.kinds["image"].setChecked(not src)
         self.kinds["binary"].setChecked(not src)
 
-    @staticmethod
-    def _guess_category(paths, folder) -> str:
-        from ..ingest import CODE_EXT
-        exts = {p.suffix.lower() for p in paths}
-        if folder:
-            return "Emulator Source"
-        if exts and exts <= {".d64", ".t64", ".tap", ".tzx", ".adf", ".dsk", ".atr", ".st", ".ssd", ".dsd", ".uef", ".cas", ".ipf", ".woz"}:
-            return "Disk & Tape Images"
-        if exts and exts <= {".rom", ".bin", ".hex", ".jed"}:
-            return "Firmware & ROMs"
-        if exts and exts <= CODE_EXT:
-            return "Emulator Source"
-        if exts and exts <= {".gif", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}:
-            return "Schematics"
-        return "User Guides & Manuals"
-
     def values(self) -> dict:
         kinds = {k for k, cb in self.kinds.items() if cb.isChecked()} if self.kinds else None
-        return {"system_id": self.system.currentData(), "category": self.category.currentText().strip() or "Other",
-                "copy": self.copy.isChecked(), "kinds": kinds}
+        out = {"system_id": self.system.currentData(), "copy": self.copy.isChecked(), "kinds": kinds}
+        if self.folder:
+            out["category"] = self.category.currentText().strip() or "Other"
+        else:
+            out["categories"] = {str(p): cb.currentText().strip() or "Other" for p, cb in self.rows}
+        return out
 
 
 # =========================================================================== settings

@@ -9,6 +9,9 @@ import logging
 import sys
 from pathlib import Path
 
+from mcp.server.mcpserver import Image
+from mcp_types import TextContent
+
 from .library import Library
 from . import search as S
 
@@ -20,6 +23,10 @@ info cards and disk/tape image listings. Use `search_docs` first (optionally fil
 datasheets, the source code implementing a chip, errata, newer revisions) - follow them with `get_related` /
 `read_document` when the question spans several documents. Cite results as 'System / Document, page N'.
 Text from scanned documents is OCR output and may contain recognition errors.
+Documents of kind "pdf" or "image" can be looked at with `view_page` (if you can see images): use it for what OCR
+can't give - schematics, pinout diagrams, photos of boards (chip markings, jumpers, switches), tables and layouts -
+or to check doubtful OCR text. Zoom in with `region` to read small print. The "Photos" category holds the owner's
+photos of machines and boards; they have no OCR text, so look at them.
 
 Peripherals and expansions (disk drives, second processors, accelerator / RAM / IDE boards...) are systems of
 their own, listed with the machines they work with. Searching a machine also searches its peripherals; those hits
@@ -89,7 +96,8 @@ def build_server(library: str | Path):
             query: natural-language question or keywords, e.g. "SID filter cutoff register" or "$D011".
             system: optional system name or alias to restrict to (see list_systems), e.g. "C64".
             category: optional category, e.g. "Programming Reference", "Schematics", "Pinouts", "Chip Datasheets",
-                      "User Guides & Manuals", "Emulator Source", "Firmware & ROMs", "Disk & Tape Images".
+                      "User Guides & Manuals", "Service & Repair", "Photos", "Emulator Source", "Firmware & ROMs",
+                      "Disk & Tape Images", "My Notes".
             limit: number of passages to return (1-30).
             mode: "hybrid" (default), "keyword" (exact terms, good for register names / addresses) or "semantic".
             include_peripherals: with a system, also search the peripherals and expansions that work with it
@@ -135,6 +143,30 @@ def build_server(library: str | Path):
             head += "Related documents:\n" + describe(links) + "\n"
         head += "\n"
         return head + S.document_text(lib, doc_id, page_from, page_to, max_chars=max(1000, min(max_chars, 100000)))
+
+    @mcp.tool()
+    def view_page(doc_id: int, page: int = 1, region: list[float] | None = None) -> list[TextContent | Image]:
+        """Look at a page of a scanned document or PDF, or at a picture (a photo of a board or machine, a
+        schematic, a pinout diagram), as an image. Use it for what OCR text can't give: drawings, chip markings,
+        jumper and switch settings, connectors, tables and page layout - or to check doubtful OCR text.
+
+        Args:
+            doc_id: a document of kind "pdf" or "image" (from search_docs or list_documents).
+            page: page number (1 = first; a single picture has just page 1).
+            region: zoom into part of the page: [left, top, right, bottom] as fractions of the page (0-1), e.g.
+                    [0, 0, 0.5, 0.5] = top-left quarter. Shown sharper - use it to read small print.
+        Each image costs about 1,500 tokens of context, so look only at the pages you need."""
+        from .pictures import PictureError, caption, render
+        d = lib.document(doc_id)
+        if not d:
+            return [TextContent(type="text", text=f"No document with id {doc_id}")]
+        try:
+            data, info = render(lib, d, page, region)
+        except PictureError as e:
+            return [TextContent(type="text", text=str(e))]
+        except Exception as e:                       # unreadable file: say so rather than fail the call
+            return [TextContent(type="text", text=f"Couldn't show page {page} of '{d.title}': {e}")]
+        return [TextContent(type="text", text=caption(info)), Image(data=data, format="jpeg")]
 
     @mcp.tool()
     def get_related(doc_id: int) -> list[dict]:
@@ -213,8 +245,9 @@ def build_server(library: str | Path):
     @mcp.tool()
     def add_file_to_library(upload: str, system: str, category: str | None = None, title: str | None = None) -> dict:
         """Add an uploaded file to the library, under a system (name or alias). upload: a reference from
-        list_uploads, or just the upload_id to add every file in it. Disk and tape images go to "Disk & Tape
-        Images" unless you give a category. Returns the new doc_ids (then e.g. list_image_contents(doc_id))."""
+        list_uploads, or just the upload_id to add every file in it. Without a category, each file's is guessed
+        from its type (disk and tape images -> "Disk & Tape Images", photos -> "Photos", manuals -> "User Guides &
+        Manuals", ...). Returns the new doc_ids (then e.g. list_image_contents(doc_id))."""
         s = lib.find_system(system)
         if not s:
             return {"error": f"No system matching '{system}' (see list_systems)"}

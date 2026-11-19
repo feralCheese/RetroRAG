@@ -693,6 +693,9 @@ class Library:
                 continue
             old_md, old_js = self.derived_md_path(d), self.ocr_json_path(d)
             upd = {"system_id": system_id, "category": cat, "group_path": group, "text_updated": now_iso()}
+            if d.kind == "image" and d.text_status == "none" and cat != d.category:
+                from .categorize import PHOTOS
+                upd["needs_ocr"] = int(cat != PHOTOS)     # photos aren't queued for OCR (see ingest.extract)
             if Path(d.path).is_absolute():              # linked in place: the original stays where it is
                 new_dir = self.system_dir(target) / "_derived" / slugify(cat) / group
                 new_name = Path(d.path).name

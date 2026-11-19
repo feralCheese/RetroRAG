@@ -93,17 +93,18 @@ def ocr_job(library: str, doc_ids: list[int], pages: list[int] | None = None, fo
     return out
 
 
-def add_files_job(library: str, system_id: int, category: str, paths: list[str], copy: bool = True,
-                  progress=None, log=print, cancel=None) -> list[int]:
+def add_files_job(library: str, system_id: int, category: str | None, paths: list[str], copy: bool = True,
+                  categories: dict[str, str] | None = None, progress=None, log=print, cancel=None) -> list[int]:
+    """category: for every file (None: guess each); categories: {path: category} for each file."""
     from pathlib import Path
     from .ingest import add_files
     from .library import Library
     lib = Library(library)
     return add_files(lib, lib.system(system_id), category, [Path(p) for p in paths], copy=copy,
-                     progress=progress, cancel=cancel, log=log)
+                     categories=categories, progress=progress, cancel=cancel, log=log)
 
 
-def add_folder_job(library: str, system_id: int, category: str, folder: str, copy: bool = True,
+def add_folder_job(library: str, system_id: int, category: str | None, folder: str, copy: bool = True,
                    kinds: list[str] | None = None, progress=None, log=print, cancel=None) -> list[int]:
     from pathlib import Path
     from .ingest import add_folder

@@ -408,7 +408,8 @@ def add_upload_to_library(lib: Library, ref: str, system: System, category: str 
         paths = sorted(p for p in root.rglob("*") if p.is_file() and p.name != ".meta.json")
     ids = []
     for p in paths:
-        cat = category or (IMAGE_CATEGORY if media.detect(p.read_bytes(), p.suffix) else "Other")
+        from .categorize import guess_file
+        cat = category or guess_file(p)
         i = ingest.add_file(lib, system, cat, p, copy=True, title=title if len(paths) == 1 else None, log=log)
         if i is None:
             row = lib.conn().execute("SELECT id FROM documents WHERE system_id=? AND sha1=?",

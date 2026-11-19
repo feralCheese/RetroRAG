@@ -7,7 +7,7 @@
     python -m retrorag index [--all]           build/refresh the index
     python -m retrorag ocr   [--doc ID]        OCR documents that need it
     python -m retrorag search "query" [--system C64] [--category ...]
-    python -m retrorag add   --system C64 --category "Schematics" FILE_OR_FOLDER...
+    python -m retrorag add   --system C64 [--category "Schematics"] FILE_OR_FOLDER...   (category: guessed per file)
     python -m retrorag export --markdown OUT_DIR | --jsonl OUT_FILE
     python -m retrorag stats
     python -m retrorag image formats | list IMG | read IMG NAME | extract IMG [NAME...] --to DIR
@@ -95,7 +95,7 @@ def main(argv: list[str] | None = None) -> int:
     i = sub.add_parser("index"); i.add_argument("--all", action="store_true")
     o = sub.add_parser("ocr"); o.add_argument("--doc", type=int, action="append"); o.add_argument("--force", action="store_true")
     s = sub.add_parser("search"); s.add_argument("query"); s.add_argument("--system"); s.add_argument("--category"); s.add_argument("-k", type=int, default=5); s.add_argument("--mode", default="hybrid")
-    ad = sub.add_parser("add"); ad.add_argument("--system", required=True); ad.add_argument("--category", default="Other"); ad.add_argument("--link", action="store_true", help="don't copy, reference in place"); ad.add_argument("paths", nargs="+")
+    ad = sub.add_parser("add"); ad.add_argument("--system", required=True); ad.add_argument("--category", default=None, help="default: guessed for each file from its type"); ad.add_argument("--link", action="store_true", help="don't copy, reference in place"); ad.add_argument("paths", nargs="+")
     e = sub.add_parser("export"); e.add_argument("--markdown"); e.add_argument("--jsonl"); e.add_argument("--embeddings", action="store_true")
     sub.add_parser("stats")
     dm = sub.add_parser("download-model", help="fetch the built-in embedding model now (e.g. before going offline)")

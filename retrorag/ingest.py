@@ -86,9 +86,20 @@ def _unique_dest(dest: Path) -> Path:
 
 
 # ======================================================================== add files
-def add_files(lib: Library, system: System, category: str, paths: Iterable[Path], *, copy: bool = True,
+def _auto(category: str | None) -> bool:
+    """None (or BY_TYPE) as a category: guess each file's category from its own type (categorize.py)."""
+    from .categorize import BY_TYPE
+    return category is None or category == BY_TYPE
+
+
+def add_files(lib: Library, system: System, category: str | None, paths: Iterable[Path], *, copy: bool = True,
               group_path: str = "", progress: Progress | None = None, cancel: Cancel | None = None,
-              kinds: set[str] | None = None, log: Callable[[str], None] = print) -> list[int]:
+              kinds: set[str] | None = None, categories: dict[str, str] | None = None,
+              log: Callable[[str], None] = print) -> list[int]:
+    """Add files. category applies to all of them; None guesses each file's own (a zip: its contents').
+    categories: per-file overrides, {str(path): category}. For a zip, BY_TYPE files each of its files under its
+    own type's category."""
+    from .categorize import guess_file
     paths = [Path(p) for p in paths]
     added: list[int] = []
     for i, src in enumerate(paths):
@@ -98,10 +109,15 @@ def add_files(lib: Library, system: System, category: str, paths: Iterable[Path]
         if progress:
             progress(i, len(paths), src.name)
         try:
-            if src.suffix.lower() in ARCHIVE_EXT and lib.settings.extract_archives:
-                added += _add_archive(lib, system, category, src, group_path, kinds, log, cancel)
+            cat = (categories or {}).get(str(src), category)
+            if src.suffix.lower() in ARCHIVE_EXT and lib.settings.extract_archives and zipfile.is_zipfile(src):
+                if cat is None:
+                    cat = guess_file(src)
+                added += _add_archive(lib, system, cat, src, group_path, kinds, log, cancel)
                 continue
-            doc_id = add_file(lib, system, category, src, copy=copy, group_path=group_path, kinds=kinds, log=log)
+            if _auto(cat):
+                cat = guess_file(src)
+            doc_id = add_file(lib, system, cat, src, copy=copy, group_path=group_path, kinds=kinds, log=log)
             if doc_id:
                 added.append(doc_id)
         except Exception as e:  # keep going; one bad file shouldn't stop a batch
@@ -333,10 +349,7 @@ def consolidate_linked(lib: Library, log: Callable[[str], None] = print) -> int:
     return n
 
 
-def _add_archive(lib, system, category, src, group_path, kinds, log, cancel) -> list[int]:
-    out_dir = lib.system_dir(system) / slugify(category) / group_path / safe_filename(src.stem)
-    out_dir = _unique_dest(out_dir)
-    out_dir.mkdir(parents=True)
+def _extract_zip(src: Path, out_dir: Path, log) -> None:
     root = out_dir.resolve()
     with zipfile.ZipFile(src) as z:
         for info in z.infolist():
@@ -349,6 +362,26 @@ def _add_archive(lib, system, category, src, group_path, kinds, log, cancel) -> 
             target.parent.mkdir(parents=True, exist_ok=True)
             with z.open(info) as fsrc, open(target, "wb") as fdst:
                 shutil.copyfileobj(fsrc, fdst)
+
+
+def _add_archive(lib, system, category, src, group_path, kinds, log, cancel) -> list[int]:
+    group = safe_filename(src.stem)
+    rel_group = (Path(group_path) / group).as_posix() if group_path else group
+    if _auto(category):
+        # each file under its own type's category: unpack outside the library, then copy each file to
+        # systems/<system>/<its category>/<zip name>/...
+        import tempfile
+        with tempfile.TemporaryDirectory(prefix="retrorag-zip-") as tmp:
+            out_dir = Path(tmp) / group
+            out_dir.mkdir()
+            _extract_zip(src, out_dir, log)
+            log(f"Extracted {src.name} (each file filed by its type)")
+            return add_folder(lib, system, None, out_dir, copy=True, group_root=rel_group, kinds=kinds, log=log,
+                              cancel=cancel)
+    out_dir = lib.system_dir(system) / slugify(category) / group_path / group
+    out_dir = _unique_dest(out_dir)
+    out_dir.mkdir(parents=True)
+    _extract_zip(src, out_dir, log)
     log(f"Extracted {src.name} -> {lib.relpath(out_dir)}")
     rel_group = (Path(group_path) / out_dir.name).as_posix() if group_path else out_dir.name
     return add_folder(lib, system, category, out_dir, copy=True, group_root=rel_group, kinds=kinds, log=log, cancel=cancel)
@@ -365,10 +398,13 @@ def iter_folder(folder: Path) -> list[Path]:
     return files
 
 
-def add_folder(lib: Library, system: System, category: str, folder: Path, *, copy: bool = True,
+def add_folder(lib: Library, system: System, category: str | None, folder: Path, *, copy: bool = True,
                group_root: str | None = None, kinds: set[str] | None = None, progress: Progress | None = None,
                cancel: Cancel | None = None, log: Callable[[str], None] = print) -> list[int]:
-    """Add a whole tree (e.g. an emulator's source). Folder structure is kept as each document's group_path."""
+    """Add a whole tree (e.g. an emulator's source). Folder structure is kept as each document's group_path.
+    category None (or BY_TYPE): each file under its own type's category."""
+    from .categorize import guess_file
+    auto = _auto(category)
     folder = Path(folder)
     group_root = group_root if group_root is not None else safe_filename(folder.name)
     files = iter_folder(folder)
@@ -386,7 +422,8 @@ def add_folder(lib: Library, system: System, category: str, folder: Path, *, cop
         rel_parent = f.parent.relative_to(folder).as_posix()
         gp = group_root if rel_parent == "." else f"{group_root}/{rel_parent}"
         try:
-            doc_id = add_file(lib, system, category, f, copy=copy, group_path=gp, kinds=kinds, log=log)
+            doc_id = add_file(lib, system, guess_file(f) if auto else category, f, copy=copy, group_path=gp,
+                              kinds=kinds, log=log)
             if doc_id:
                 added.append(doc_id)
         except Exception as e:
@@ -424,7 +461,10 @@ def extract(lib: Library, d: Document, log: Callable[[str], None] = print) -> No
                 upd["pages"] = getattr(im, "n_frames", 1)
         except Exception as e:
             log(f"Could not open image {src.name}: {e}")
-        upd.update(needs_ocr=1, text_status="none")
+        from .categorize import PHOTOS
+        # photos aren't queued for OCR (a board photo gives a few chip numbers at best, mostly junk); the AI can
+        # look at them instead (view_page), and Run OCR still works on one when asked
+        upd.update(needs_ocr=int(d.category != PHOTOS), text_status="none")
     else:  # binary
         md = lib.derived_md_path(d)
         md.write_text(binaries.info_card(src, d.title, s.name if s else "", d.category,

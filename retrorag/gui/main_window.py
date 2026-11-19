@@ -1265,20 +1265,20 @@ read a drawing.</p>
         files = [p for p in paths if p.is_file()]
         if files:
             dlg = AddDialog(self, self.lib.systems(), system, files, folder=False)
-            if category:
-                dlg.category.setCurrentText(category)
+            if category:                    # dropped onto a category: that's where the user wants them
+                dlg.set_all(category)
             if dlg.exec():
                 v = dlg.values()
                 s = self.lib.system(v["system_id"])
                 lib_root = str(self.lib.root)
                 self.jobs.submit(f"Add {len(files)} file(s) to {s.name}", lambda ctx: ctx.run_process(
-                    "retrorag.proc:add_files_job", library=lib_root, system_id=s.id, category=v["category"],
-                    paths=[str(f) for f in files], copy=v["copy"]), on_done=self._after_add,
-                    verb=f"Adding {len(files)} file(s)")
+                    "retrorag.proc:add_files_job", library=lib_root, system_id=s.id, category=None,
+                    categories=v["categories"], paths=[str(f) for f in files], copy=v["copy"]),
+                    on_done=self._after_add, verb=f"Adding {len(files)} file(s)")
         for folder in folders:
             dlg = AddDialog(self, self.lib.systems(), system, [folder], folder=True)
             if category:
-                dlg.category.setCurrentText(category)
+                dlg.set_all(category)
             if dlg.exec():
                 v = dlg.values()
                 s = self.lib.system(v["system_id"])
