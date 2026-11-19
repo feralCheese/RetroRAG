@@ -1043,7 +1043,7 @@ read a drawing.</p>
                 m.addAction("Put on a new disk / tape image…", lambda: self.create_image_dialog(
                     d.system_id, [i for i in self.selected_doc_ids()] or [key[1]]))
             m.addSeparator()
-            m.addAction("Move to system…", self.move_selected_dialog)
+            m.addAction("Move to…", self.move_selected_dialog)
             m.addAction("Remove…", self.remove_selected_docs)
         m.exec(self.tree.viewport().mapToGlobal(pos))
 

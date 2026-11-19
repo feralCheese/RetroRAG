@@ -99,7 +99,7 @@ Windows 11-style light and dark themes using the Segoe Fluent icon set. *View �
      - **Searching a variant** (in Search test or by the AI) returns its own documents plus everything common from its family. Searching the family returns all of them.
      - **Removing a family** keeps its variants; they move up a level.
    - **Peripherals and expansions:** see [Peripherals, notes and links](#peripherals-notes-and-links).
-   - **Moving a misfiled document:** right-click → *Move to system…*, drag it onto another system or category in the tree, or change **System** on the Document tab and click *Save details*. The file moves on disk together with its OCR text, corrections and links.
+   - **Moving a misfiled document:** right-click → *Move to…* (another system, another category, or both), drag it onto another system or category in the tree, or change **System** or **Category** on the Document tab and click *Save details*. The file moves on disk together with its OCR text, corrections and links.
 3. **🔤 Run OCR** on scanned PDFs and images. PDFs with a text layer are extracted directly; only pages without
    text are OCR'd, and *Force OCR* re-does every page.
    - **Ring-bound and comb-bound manuals:** the column of holes, rings or comb teeth down one edge of each page,
