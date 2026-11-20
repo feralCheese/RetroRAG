@@ -26,6 +26,15 @@ def run(library: str | None = None) -> int:
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("RetroRAG.App")
     except Exception:
         pass
+    try:   # the window's thread comes first, so clicks are answered at once while a job uses every core
+        import ctypes
+        from ctypes import wintypes
+        k = ctypes.windll.kernel32
+        k.GetCurrentThread.restype = wintypes.HANDLE          # a pseudo-handle (-2): mustn't be cut to 32 bits
+        k.SetThreadPriority.argtypes = (wintypes.HANDLE, ctypes.c_int)
+        k.SetThreadPriority(k.GetCurrentThread(), 1)          # THREAD_PRIORITY_ABOVE_NORMAL
+    except Exception:
+        pass
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     s = AppSettings.load()

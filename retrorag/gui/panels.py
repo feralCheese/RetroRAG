@@ -27,8 +27,10 @@ def human_size(n: int) -> str:
 STATUS_TEXT = {"none": "no text yet", "extracted": "text extracted", "partial": "partly extracted (some pages need OCR)",
                "ocr": "OCR text (not yet proofread)", "reviewed": "proofread ✓", "info": "info card (binary file)"}
 
-PRIMARY_ACTIONS = ("open_editor", "ocr", "open_original")
-ACTIONS = [("open_editor", "Proofread", "edit"), ("ocr", "Run OCR", "scan"),
+PRIMARY_ACTIONS = ("ocr", "open_editor", "open_original")
+BAR_ACTIONS = PRIMARY_ACTIONS + ("no_ocr",)              # buttons; the rest are in More
+# in the order of the steps: OCR (or say it isn't needed), then proofread
+ACTIONS = [("ocr", "Run OCR", "scan"), ("no_ocr", "OCR not needed", "check"), ("open_editor", "Proofread", "edit"),
            ("ocr_force", "Force OCR (all pages)", "refresh"), ("reextract", "Re-extract text", "text"),
            ("index", "Index now", "sync"), ("open_original", "Original", "view"),
            ("show_folder", "Show in folder", "open_folder"), ("remove", "Remove…", "delete")]
@@ -78,8 +80,8 @@ class DocPanel(QWidget):
         self.callout.setTextFormat(Qt.RichText)
         self.callout.hide()
         v.addWidget(self.callout)
-        self.busy_ids: set = set()        # maintained by the main window
-        self.busy_text = ""
+        self.busy_map: dict = {}          # {doc id: what a job is doing to it}, maintained by the main window
+        self.busy_ids: set = set()
 
         box = QGroupBox("Details")
         f = QFormLayout(box)
@@ -113,15 +115,17 @@ class DocPanel(QWidget):
         self._more_actions: dict = {}
         for key, label, ic in ACTIONS:
             self._button_icons[key] = ic
-            if key in PRIMARY_ACTIONS:
+            if key in BAR_ACTIONS:
                 b = QPushButton(label)
                 b.clicked.connect(lambda _=False, k=key: self.doc and self.action.emit(k, self.doc.id))
                 bar.addWidget(b)
                 self.buttons[key] = b
         more = QPushButton("More")
         menu = QMenu(more)
+        self.buttons["no_ocr"].setToolTip("Nothing worth reading in it (a photo of a board, a logo...): take it off "
+                                          "the list of documents that need OCR. Run OCR still works on it later.")
         for key, label, ic in ACTIONS:
-            if key not in PRIMARY_ACTIONS:
+            if key not in BAR_ACTIONS:
                 if key == "remove":
                     menu.addSeparator()
                 a = menu.addAction(label)
@@ -344,6 +348,8 @@ class DocPanel(QWidget):
                           "Open the text editor (scan on the left, text on the right).")
         b_ocr.setText("Run OCR" if (d.needs_ocr or no_text) else "Re-run OCR")
         b_ocr.setEnabled(scan and not busy)
+        self.buttons["no_ocr"].setVisible(scan and bool(d.needs_ocr))
+        self.buttons["no_ocr"].setEnabled(not busy)
         self.buttons["ocr_force"].setEnabled(scan and not busy)
         self.buttons["reextract"].setEnabled(not busy)
         t = theme.T
@@ -354,13 +360,15 @@ class DocPanel(QWidget):
             self._set_primary(None)
             return
         from ..categorize import PHOTOS
-        if d.kind == "image" and d.category == PHOTOS and no_text and not d.needs_ocr:
+        if no_text and not d.needs_ocr:          # a photo, or marked 'OCR not needed'
             self._set_primary(None)
             b_ocr.setText("Run OCR")
-            msg, state = ("<b>A photo.</b> Photos aren't OCR'd: an AI that can see pictures looks at it with "
-                          "<b>view_page</b>. To help searches find it, describe what it shows in <b>Notes</b>, "
-                          "such as the board revision, chip markings or jumper settings. If it has writing worth "
-                          "reading, such as a label, <b>Run OCR</b> still works."), "done"
+            what = ("<b>A photo.</b> Photos aren't OCR'd" if d.kind == "image" and d.category == PHOTOS else
+                    "<b>No OCR needed.</b> It's marked as having nothing worth reading")
+            msg, state = (what + ": an AI that can see pictures looks at it with <b>view_page</b>. To help "
+                          "searches find it, describe what it shows in <b>Notes</b>, such as the board revision, "
+                          "chip markings or jumper settings. If it has writing worth reading, such as a label, "
+                          "<b>Run OCR</b> still works."), "done"
         elif scan and (d.needs_ocr or no_text):
             self._set_primary("ocr")
             msg = (step(1, 2, "Run OCR") + ("This is a scan with no text yet. " if no_text else
@@ -389,11 +397,11 @@ class DocPanel(QWidget):
         self.callout.setText(msg)
         self.callout.setVisible(bool(msg))
 
-    def set_busy(self, doc_ids: set, text: str = ""):
-        """Main window tells us which documents a running job is working on."""
-        self.busy_ids, self.busy_text = set(doc_ids), text
+    def set_busy(self, busy: dict):
+        """Main window tells us which documents jobs are working on, or waiting to: {doc id: what's happening}."""
+        self.busy_map, self.busy_ids = dict(busy), set(busy)
         if self.doc and self.doc.id in self.busy_ids:
-            self.busy.show_busy(text or "Working…")
+            self.busy.show_busy(self.busy_map[self.doc.id] or "Working…")
         else:
             self.busy.clear()
         if self.doc:
@@ -401,7 +409,7 @@ class DocPanel(QWidget):
 
     def _fill_info(self, d: Document):
         if d.id in self.busy_ids:
-            self.busy.show_busy(self.busy_text or "Working…")
+            self.busy.show_busy(self.busy_map[d.id] or "Working…")
         else:
             self.busy.clear()
         s = self.lib.system(d.system_id)

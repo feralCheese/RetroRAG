@@ -176,10 +176,8 @@ class PreviewPane(QWidget):
                 img, note = None, f"Could not render: {e}"
             self.image.set_image(img, None)
             self.stack.setCurrentWidget(self.image)
-            if not note and not has_processed(d):
-                from ..categorize import PHOTOS
-                note = ("" if d.kind == "image" and d.category == PHOTOS and not d.needs_ocr
-                        else "No text yet - run OCR to create a processed version.")
+            if not note and not has_processed(d) and d.needs_ocr:     # (photos and 'OCR not needed': no note)
+                note = "No text yet - run OCR to create a processed version."
         else:
             converted = d.kind == "text" and d.text_path and d.text_path != d.path    # RTF / HTML
             if mode == "original" and converted:

@@ -19,6 +19,7 @@ class Job:
     id: int = field(default=0)
     doc_ids: frozenset = frozenset()      # documents this job works on (for busy indicators)
     verb: str = ""                        # e.g. "Running OCR"
+    dropped: bool = False                 # taken off the queue before it started
 
 
 class JobContext:
@@ -74,6 +75,30 @@ class JobRunner(QObject):
         self.queue_changed.emit(self._q.qsize() + int(self.busy))
         return job.id
 
+    def queued(self) -> list[Job]:
+        """Jobs waiting to start, in order."""
+        with self._q.mutex:
+            return [j for j in self._q.queue if j is not None and not j.dropped]
+
+    def doc_ids_in_use(self) -> set:
+        """Documents the running job, or one waiting to start, works on."""
+        cur = self.current
+        return set(cur.doc_ids if cur else ()).union(*(j.doc_ids for j in self.queued()))
+
+    def cancel_for(self, doc_id: int) -> None:
+        """Cancel what's happening to one document: the running job if it's that one's (which, like Cancel, also
+        empties the queue), else just its jobs waiting to start."""
+        cur = self.current
+        if cur is not None and doc_id in cur.doc_ids:
+            self.cancel()
+            return
+        for j in self.queued():
+            if doc_id in j.doc_ids:
+                j.dropped = True
+                self.log.emit(f"Cancelled queued job: {j.name}")
+        self.pending_doc_ids = set().union(*(j.doc_ids for j in self.queued()), cur.doc_ids if cur else ())
+        self.queue_changed.emit(len(self.queued()) + int(self.busy))
+
     def cancel(self) -> None:
         self._cancel.set()
         # drop queued jobs too
@@ -96,6 +121,8 @@ class JobRunner(QObject):
             job = self._q.get()
             if job is None:
                 return
+            if job.dropped:
+                continue
             self._cancel.clear()
             self.busy = True
             self.current = job

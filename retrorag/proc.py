@@ -60,7 +60,26 @@ def run_in_process(target: str, kwargs: dict, progress: Callable[[int, int, str]
     return result
 
 
+def _lower_priority() -> None:
+    """A job gives way to the window: below-normal priority (Tesseract, started from here, inherits it)."""
+    try:
+        import sys
+        if sys.platform == "win32":
+            import ctypes
+            from ctypes import wintypes
+            k = ctypes.windll.kernel32
+            k.GetCurrentProcess.restype = wintypes.HANDLE        # a pseudo-handle (-1): mustn't be cut to 32 bits
+            k.SetPriorityClass.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+            k.SetPriorityClass(k.GetCurrentProcess(), 0x4000)    # BELOW_NORMAL_PRIORITY_CLASS
+        else:
+            import os
+            os.nice(5)
+    except Exception:
+        pass
+
+
 def _child(target: str, kwargs: dict, q) -> None:
+    _lower_priority()
     mod, fn = target.split(":")
     try:
         f = getattr(importlib.import_module(mod), fn)

@@ -6,7 +6,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QByteArray, QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QColor, QFont, QKeySequence
-from PySide6.QtWidgets import (QComboBox, QDockWidget, QFileDialog, QHBoxLayout, QInputDialog, QLabel,
+from PySide6.QtWidgets import (QApplication, QComboBox, QDockWidget, QFileDialog, QHBoxLayout, QInputDialog, QLabel,
                                QLineEdit, QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
                                QTabWidget, QTextBrowser, QToolBar, QToolButton, QTreeWidget, QTreeWidgetItem,
                                QVBoxLayout, QWidget)
@@ -60,14 +60,20 @@ class LibraryTree(QTreeWidget):
             e.acceptProposedAction()
 
     def dropEvent(self, e):
+        # Accepted as a copy, never a move: after a move, Qt deletes the dragged rows from the view itself - by
+        # then the tree has been rebuilt, so it deleted the system or documents from their new place (and Explorer
+        # may delete files dropped from it). The work starts once the drag is over, so its dialogs don't run inside
+        # the drag, which would also keep Explorer waiting.
+        it = self.itemAt(e.position().toPoint())
+        target = it.data(0, ROLE) if it else None
+        e.setDropAction(Qt.CopyAction)
+        e.accept()
         if e.source() is self:          # moving documents (or a system) within the library
-            self.win.drop_move(self.itemAt(e.position().toPoint()))
-            e.acceptProposedAction()
+            dragged = [k for x in self.selectedItems() if (k := x.data(0, ROLE))]
+            QTimer.singleShot(0, lambda: self.win.drop_move(target, dragged))
             return
         paths = [Path(u.toLocalFile()) for u in e.mimeData().urls() if u.toLocalFile()]
-        it = self.itemAt(e.position().toPoint())
-        self.win.add_paths(paths, it)
-        e.acceptProposedAction()
+        QTimer.singleShot(0, lambda: self.win.add_paths(paths, self.win.item_for(target)))
 
 
 class MainWindow(QMainWindow):
@@ -335,7 +341,8 @@ class MainWindow(QMainWindow):
         self.jobs.log.connect(self.log)
         self.jobs.job_started.connect(self._on_job_busy)
         self.jobs.job_ended.connect(self._on_job_idle)
-        self.doc_panel.cancel_job.connect(self.jobs.cancel)
+        self.doc_panel.cancel_job.connect(lambda: self.doc_panel.doc and self.jobs.cancel_for(self.doc_panel.doc.id))
+        self.jobs.queue_changed.connect(self._apply_busy)
         self.jobs.started.connect(self._on_job_started)
         self.jobs.progress.connect(self._on_progress)
         self.jobs.finished.connect(self._on_job_finished)
@@ -359,12 +366,28 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ busy feedback
     def _show_busy(self, job, text: str):
+        self._busy_text = (job.id, text)
         self.status_spinner.start()
         self.status_busy.setText(text[:90])
         self.status_busy.show()
-        self.doc_panel.set_busy(set(job.doc_ids), text)
+        self._apply_busy()
+
+    def _apply_busy(self, *_):
+        """Tell the document panel and editors which documents a job is working on, or waiting to: they say so
+        and lock their buttons at once, so a click that only queued a job doesn't look as if it did nothing."""
+        cur = self.jobs.current
+        busy: dict[int, str] = {}
+        for j in self.jobs.queued():
+            wait = f"{j.verb} - waiting for '{cur.name}' to finish" if cur else f"{j.verb} - starting…"
+            for did in j.doc_ids:
+                busy.setdefault(did, wait)
+        if cur is not None:
+            jid, text = getattr(self, "_busy_text", (None, ""))
+            for did in cur.doc_ids:
+                busy[did] = text if jid == cur.id and text else f"{cur.verb}…"
+        self.doc_panel.set_busy(busy)
         for did, ed in self.editors.items():
-            ed.set_busy(text if did in job.doc_ids else None)
+            ed.set_busy(busy.get(did))
 
     def _on_job_busy(self, job):
         self._show_busy(job, f"{job.verb}…")
@@ -372,12 +395,10 @@ class MainWindow(QMainWindow):
             self.refresh_tree()
 
     def _on_job_idle(self, job):
-        if self.jobs._q.empty():
+        if not self.jobs.queued() and self.jobs.current is None:
             self.status_spinner.stop()
             self.status_busy.hide()
-        self.doc_panel.set_busy(set())
-        for ed in self.editors.values():
-            ed.set_busy(None)
+        self._apply_busy()
         if job.doc_ids:
             self.refresh_tree()
 
@@ -662,6 +683,13 @@ read a drawing.</p>
             if key and key == sel:
                 self.tree.setCurrentItem(item)
 
+    def item_for(self, key):
+        """The tree item for a key (None if it isn't shown)."""
+        if not key:
+            return None
+        key = tuple(key)
+        return next((it for it in self._iter_items() if it.data(0, ROLE) and tuple(it.data(0, ROLE)) == key), None)
+
     def _iter_items(self):
         out = []
 
@@ -928,10 +956,10 @@ read a drawing.</p>
             self.statusBar().showMessage("Copying runs in the background - you can keep working.", 6000)
 
     # ================================================================== selection helpers
-    def selected_doc_ids(self) -> list[int]:
+    def selected_doc_ids(self, keys: list | None = None) -> list[int]:
+        """Documents of the selected tree items (or of these tree keys)."""
         ids = []
-        for it in self.tree.selectedItems():
-            key = it.data(0, ROLE)
+        for key in (keys if keys is not None else [it.data(0, ROLE) for it in self.tree.selectedItems()]):
             if not key:
                 continue
             if key[0] == "doc":
@@ -1030,6 +1058,7 @@ read a drawing.</p>
             if key[0] == "doc":
                 m.addAction("Open / proofread", lambda: self.open_editor(key[1]))
             m.addAction("Run OCR", lambda: self.ocr_docs(self.selected_doc_ids()))
+            m.addAction("OCR not needed", lambda: self.ocr_not_needed(self.selected_doc_ids()))
             m.addAction("Force OCR (all pages)", lambda: self.ocr_docs(self.selected_doc_ids(), force=True))
             m.addAction("Index now", lambda: self.build_index(False, self.selected_doc_ids()))
             if key[0] in ("category", "folder"):
@@ -1143,12 +1172,12 @@ read a drawing.</p>
             sid, cat, group = dlg.values()
             self.move_docs(ids, sid, cat, group)
 
-    def drop_move(self, target):
-        """Documents dragged onto a system / category in the tree (or a system onto another system)."""
-        key = target.data(0, ROLE) if target else None
-        if not key:
+    def drop_move(self, key, dragged: list):
+        """Documents dragged onto a system / category in the tree (or a system onto another system).
+        key: what they were dropped on; dragged: what was selected (tree keys, taken when the drop happened)."""
+        if not key or not dragged:
             return
-        dragged = [it.data(0, ROLE) for it in self.tree.selectedItems() if it.data(0, ROLE)]
+        key, dragged = tuple(key), [tuple(k) for k in dragged]
         if len(dragged) == 1 and dragged[0][0] == "system" and key[0] == "peripherals" and dragged[0][1] != key[1]:
             child, host = self.lib.system(dragged[0][1]), self.lib.system(key[1])
             if QMessageBox.question(self, "Peripheral / expansion",
@@ -1157,6 +1186,7 @@ read a drawing.</p>
                     == QMessageBox.Yes:
                 self.lib.add_host(child.id, host.id)
                 self.refresh_all()
+                self.select_system(child.id)       # show it in its new place
                 self.schedule_index()
             return
         if len(dragged) == 1 and dragged[0][0] == "system" and key[0] == "system" and dragged[0][1] != key[1]:
@@ -1181,6 +1211,7 @@ read a drawing.</p>
             else:
                 return
             self.refresh_all()
+            self.select_system(child.id)           # show it in its new place
             self.schedule_index()
             return
         if key[0] in ("peripherals", "links", "link"):
@@ -1200,7 +1231,7 @@ read a drawing.</p>
         def changes(d) -> bool:
             return (d.system_id != sid or (cat is not None and d.category != cat)
                     or (group is not None and d.group_path != group))
-        ids = [i for i in self.selected_doc_ids() if (d := self.lib.document(i)) and changes(d)]
+        ids = [i for i in self.selected_doc_ids(dragged) if (d := self.lib.document(i)) and changes(d)]
         if not ids:
             return
         where = " (top level)" if group == "" else (f" / {group.split('/')[-1]}" if group else "")
@@ -1332,11 +1363,31 @@ read a drawing.</p>
     # ================================================================== OCR
     def _tesseract_ok(self) -> bool:
         from ..ocr import tesseract_info
+        if getattr(self, "_tess", None) and self._tess["ok"]:      # checked already (Settings clears it)
+            return True
         self._tess = tesseract_info(self.lib.settings.tesseract_path or self.app_settings.tesseract_path)
         if not self._tess["ok"]:
             QMessageBox.warning(self, "Tesseract needed", self._tess["message"])
             return False
         return True
+
+    def ocr_not_needed(self, ids: list[int]):
+        """Take documents with nothing worth reading (photos of a board, logos...) off the 'needs OCR' list.
+        Run OCR still works on them later."""
+        from ..library import now_iso
+        in_use = self.jobs.doc_ids_in_use()
+        docs = [d for i in ids if (d := self.lib.document(i)) and d.needs_ocr and d.id not in in_use]
+        if not docs:
+            self.statusBar().showMessage("None of those were waiting for OCR.", 5000)
+            return
+        for d in docs:
+            upd = {"needs_ocr": 0}
+            if d.text_status == "none":
+                upd["text_updated"] = now_iso()      # its index entry changes: 'no text' instead of 'awaiting OCR'
+            self.lib.update_document(d.id, **upd)
+        self.refresh_all()
+        self.schedule_index()
+        self.statusBar().showMessage(f"{len(docs)} document(s) won't be OCR'd. Run OCR still works on them.", 6000)
 
     def ocr_selected_or_pending(self):
         ids = [i for i in self.selected_doc_ids() if (d := self.lib.document(i)) and d.kind in ("pdf", "image")]
@@ -1355,6 +1406,11 @@ read a drawing.</p>
         if not self._tesseract_ok():
             return
         docs = [d for d in (self.lib.document(i) for i in ids) if d and d.kind in ("pdf", "image")]
+        in_use = self.jobs.doc_ids_in_use()
+        if docs and all(d.id in in_use for d in docs):        # e.g. a second click while the first waits
+            self.statusBar().showMessage("Already on it - see the progress above the document.", 6000)
+            return
+        docs = [d for d in docs if d.id not in in_use]
         if not docs:
             return
         edited = [d for d in docs if has_manual_edits(self.lib, d) and pages is None]
@@ -1383,10 +1439,12 @@ read a drawing.</p>
             self.schedule_index()
             if on_done:
                 on_done(res)
-        self.jobs.submit(f"OCR {len(docs)} document(s)" if not pages else f"Re-OCR page {pages[0]}", job, on_done=done,
-                         doc_ids=doc_ids, verb="Running OCR" if not pages else f"Re-running OCR on page {pages[0]}")
-        if not self.jobs.busy:
-            self.statusBar().showMessage("OCR started - it runs in the background; you can keep working.", 6000)
+        jid = self.jobs.submit(f"OCR {len(docs)} document(s)" if not pages else f"Re-OCR page {pages[0]}", job,
+                               on_done=done, doc_ids=doc_ids,
+                               verb="Running OCR" if not pages else f"Re-running OCR on page {pages[0]}")
+        cur = self.jobs.current
+        self.statusBar().showMessage(f"OCR queued - it starts when '{cur.name}' finishes." if cur and cur.id != jid
+                                     else "OCR started - it runs in the background; you can keep working.", 6000)
 
     # ================================================================== index
     def schedule_index(self):
@@ -1476,6 +1534,8 @@ read a drawing.</p>
             self.ocr_docs([doc_id])
         elif action == "ocr_force":
             self.ocr_docs([doc_id], force=True)
+        elif action == "no_ocr":
+            self.ocr_not_needed([doc_id])
         elif action == "reextract":
             if d.text_status in ("ocr", "reviewed") and QMessageBox.question(
                     self, "Re-extract", "This replaces the OCR/corrected text with the file's own text layer. Continue?") \
@@ -1533,7 +1593,7 @@ read a drawing.</p>
             ed.saved.connect(lambda i: (self.refresh_tree(), self.schedule_index(), self.refresh_stats(),
                                         self.statusBar().showMessage(f"Saved {self.lib.document(i).title}", 4000)))
             ed.dirty_changed.connect(lambda dirty, ed=ed: self._mark_tab(ed, dirty))
-            ed.cancel_job.connect(self.jobs.cancel)
+            ed.cancel_job.connect(lambda did=doc_id: self.jobs.cancel_for(did))
             ed.request_reocr.connect(self._reocr_page)
             self.editors[doc_id] = ed
             self.tabs.addTab(ed, (d.title[:28] + "…") if len(d.title) > 28 else d.title)
@@ -1620,15 +1680,25 @@ read a drawing.</p>
         dlg = SettingsDialog(self, self.app_settings, self.lib)
         if not dlg.exec():
             return
-        chunk_changed, new_lib = dlg.apply()
-        self._tess = None
-        del self._tess
-        self.app_settings.save()
-        self.set_theme(self.app_settings.theme)
-        if new_lib and Path(new_lib).resolve() != self.lib.root:
-            self.switch_library(Path(new_lib))
-            return
-        self.refresh_all()
+        s = self.app_settings
+        look = lambda: (s.theme, s.retro_phosphor, s.retro_scanlines, s.retro_font_file)
+        old_look, old_tess = look(), (self.lib.settings.tesseract_path, s.tesseract_path)
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            chunk_changed, new_lib = dlg.apply()
+            s.save()
+            if new_lib and Path(new_lib).resolve() != self.lib.root:
+                self.switch_library(Path(new_lib))
+                return
+            if (self.lib.settings.tesseract_path, s.tesseract_path) != old_tess:
+                self.__dict__.pop("_tess", None)          # check the new Tesseract
+            # restyling the whole window is the slow part: only when the look changed
+            if look() != old_look:
+                self.set_theme(s.theme)
+            else:
+                self.refresh_all()
+        finally:
+            QApplication.restoreOverrideCursor()
         if chunk_changed and QMessageBox.question(self, "Re-index", "Chunk settings changed. Rebuild the index now?") \
                 == QMessageBox.Yes:
             self.build_index(True)

@@ -215,7 +215,10 @@ class BuiltinEmbedder(Embedder):
                 import os
                 d = ensure_model(self.name, log=log)
                 opts = ort.SessionOptions()
-                opts.intra_op_num_threads = max(1, (os.cpu_count() or 2))
+                # Half the logical cores (about one per physical core), not busy-waiting between steps: measured
+                # 3-4x faster than every core with spinning, at a third of the CPU, and the window stays quick
+                opts.intra_op_num_threads = max(1, (os.cpu_count() or 2) // 2)
+                opts.add_session_config_entry("session.intra_op.allow_spinning", "0")
                 opts.log_severity_level = 3
                 sess = ort.InferenceSession(str(d / "model.onnx"), sess_options=opts,
                                             providers=["CPUExecutionProvider"])

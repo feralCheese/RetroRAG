@@ -378,7 +378,8 @@ QPushButton {{ background: {t['surface']}; border: 1px solid {t['border_strong']
 QPushButton:hover {{ background: {t['surface2']}; border-color: {t['accent']}; }}
 QPushButton:pressed {{ background: {t['accent_soft']}; }}
 QPushButton:disabled {{ color: {t['muted']}; border-color: {t['border']}; background: {t['surface2']}; }}
-QPushButton:default, QPushButton#primary {{ background: {t['accent']}; color: {t['on_accent']}; border-color: {t['accent']}; font-weight: 600; }}
+QPushButton:default, QPushButton#primary {{ background: {t['accent']}; color: {t['on_accent']}; border-color: {t['accent']}; }}
+QPushButton#primary {{ font-weight: 600; }}
 QPushButton:default:hover, QPushButton#primary:hover {{ background: {t['accent_hover']}; border-color: {t['accent_hover']}; }}
 QPushButton:default:disabled, QPushButton#primary:disabled {{ background: {t['surface2']}; color: {t['muted']}; border-color: {t['border']}; }}
 QPushButton#flat {{ border-color: transparent; background: transparent; text-align: left; padding: 6px 10px; }}
