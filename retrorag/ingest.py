@@ -130,6 +130,8 @@ def add_files(lib: Library, system: System, category: str | None, paths: Iterabl
 def add_file(lib: Library, system: System, category: str, src: Path, *, copy: bool = True,
              group_path: str = "", kinds: set[str] | None = None, title: str | None = None,
              log: Callable[[str], None] = print) -> int | None:
+    from .config import canonical_category
+    category = canonical_category(category)
     src = Path(src)
     if not src.is_file() or src.name.endswith(DERIVED_SUFFIXES) or src.suffix in SKIP_EXT:
         return None

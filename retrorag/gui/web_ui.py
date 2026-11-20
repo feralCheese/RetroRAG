@@ -18,11 +18,11 @@ MODE_TEXT = {
     "link": "Just save the link - the AI is told about it (fine for Claude, which can browse; local AIs can't)",
     "page": "Copy this page into the library (or the PDF / text file the link points at)",
     "site": "Copy this page and the pages under it on the same site",
-    "repo": "Copy the GitHub repository (imported like a source tree)",
+    "repo": "Copy the repository from GitHub or GitLab (imported like a source tree)",
 }
 
 
-SHORT_MODES = {"link": "Saved link", "page": "Copy: page", "site": "Copy: site section", "repo": "Copy: GitHub repo"}
+SHORT_MODES = {"link": "Saved link", "page": "Copy: page", "site": "Copy: site section", "repo": "Copy: repository"}
 
 
 def status_text(l: Link) -> tuple[str, str]:
@@ -66,7 +66,7 @@ class LinkDialog(QDialog):
         v = QVBoxLayout(self)
         f = QFormLayout()
         self.url = QLineEdit(link.url if link else "")
-        self.url.setPlaceholderText("https://...  - a manual, a docs site, a wiki page, a GitHub repository")
+        self.url.setPlaceholderText("https://...  - a manual, a docs site, a wiki page, a GitHub or GitLab repository")
         self.hint = QLabel()
         self.hint.setObjectName("muted")
         self.hint.setWordWrap(True)
@@ -146,6 +146,7 @@ class LinkDialog(QDialog):
             self.category.setCurrentText(link.category or self._default_category(link.mode))
             self.refresh.setCurrentIndex(max(0, self.refresh.findData(link.refresh_days)))
         self.radio[mode or "page"].setChecked(True)
+        self._last_mode = mode or "page"
         self.modes.buttonClicked.connect(self._mode_clicked)
         self.url.textChanged.connect(self._url_changed)
         self._url_changed()
@@ -160,19 +161,22 @@ class LinkDialog(QDialog):
 
     @staticmethod
     def _default_category(mode: str) -> str:
-        return "Emulator Source" if mode == "repo" else "User Guides & Manuals"
+        from ..categorize import MANUALS, SOURCE
+        return SOURCE if mode == "repo" else MANUALS
 
     def _mode_clicked(self, _b):
         self._user_mode = True
-        if not self.link:
+        # a category that was the old choice's default follows the new choice (a page link changed to a repository)
+        if not self.link or self.category.currentText() == self._default_category(self._last_mode):
             self.category.setCurrentText(self._default_category(self.mode()))
+        if not self.link:
             self.refresh.setCurrentIndex(max(0, self.refresh.findData(365 if self.mode() == "link" else 180)))
         self._update()
 
     def _url_changed(self):
         url = self.url.text().strip()
-        gh = webcopy.github_repo(url if "://" in url else "https://" + url) if url else None
-        is_repo = bool(gh and not gh["blob"])
+        rp = webcopy.repo_address(url if "://" in url else "https://" + url) if url else None
+        is_repo = bool(rp and not rp["blob"])
         self.radio["repo"].setEnabled(is_repo)
         if not self._user_mode and url:
             self.radio["repo" if is_repo else "page"].setChecked(True)
@@ -181,10 +185,11 @@ class LinkDialog(QDialog):
                 self.refresh.setCurrentIndex(max(0, self.refresh.findData(180)))
         if not is_repo and self.radio["repo"].isChecked():
             self.radio["page"].setChecked(True)
-        if gh:
-            self.hint.setText(f"GitHub repository {gh['owner']}/{gh['repo']}" +
-                              (f", {gh['ref']}" if gh["ref"] else "") + (f", folder {gh['path']}" if gh["path"] else "")
-                              if not gh["blob"] else "A file in a GitHub repository - its raw text is copied.")
+        if rp:
+            where = f" on {rp['host']}" if rp["host"] not in ("github.com", "gitlab.com") else ""
+            self.hint.setText(f"{rp['site']} repository {rp['project']}{where}" +
+                              (f", {rp['ref']}" if rp["ref"] else "") + (f", folder {rp['path']}" if rp["path"] else "")
+                              if not rp["blob"] else f"A file in a {rp['site']} repository - its raw text is copied.")
         else:
             self.hint.setText("")
         self.hint.setVisible(bool(self.hint.text()))
@@ -211,6 +216,7 @@ class LinkDialog(QDialog):
         self.scope.setVisible(site and bool(url))
         self._fit()
         self.ok.setText(("Save and copy" if not self.link else "Save and re-copy") if m != "link" else "Save")
+        self._last_mode = m
 
     def _fit(self):
         """Grow to show wrapped hint text in full (it changes as the address is typed)."""

@@ -111,7 +111,7 @@ def main(argv: list[str] | None = None) -> int:
                     help="create: tokenise a BASIC text file as program NAME")
     im.add_argument("--opt", action="append", default=[], metavar="KEY=VALUE",
                     help="create: format option, e.g. size=pc720, fs=ffs, bootable=1, boot=3")
-    ln = sub.add_parser("links", help="saved links and copies of web pages / sites / GitHub repositories")
+    ln = sub.add_parser("links", help="saved links and copies of web pages / sites / GitHub and GitLab repositories")
     ln.add_argument("action", nargs="?", default="list", choices=["list", "due", "refresh", "check"])
     ln.add_argument("ids", nargs="*", type=int, help="check: link ids")
     ln.add_argument("--all", action="store_true", help="refresh: every link, not just the ones due")

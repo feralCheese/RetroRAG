@@ -16,7 +16,7 @@ from .library import Library
 from . import search as S
 
 INSTRUCTIONS = """RetroRAG is a reference library of documentation for retro computers and consoles: user guides,
-programming references, schematics, pinouts, chip datasheets, service manuals, emulator source code, firmware/ROM
+programming references, schematics, pinouts, chip datasheets, service manuals, source code (emulators, system software), firmware/ROM
 info cards and disk/tape image listings. Use `search_docs` first (optionally filtered by system or category), then
 `read_document` with a page range to read more around a hit. Systems can have variants (e.g. ZX Spectrum ->
 48K, 128K): filtering by a variant also returns the documents common to its whole family. Hits list `related` documents (pinouts, schematics,
@@ -34,7 +34,7 @@ carry `peripheral_for`, and their CPU, OS and memory map are the peripheral's ow
 6502 is not the C64's 6510). Use include_peripherals=false to search the machine alone.
 "My Notes" documents are the library owner's own first-hand findings - give them weight, and say when an answer
 comes from them. Save a new note with `add_note` only when the user asks you to note something down.
-`list_systems` also gives each system's links (web pages, docs sites, GitHub repositories the owner saved).
+`list_systems` also gives each system's links (web pages, docs sites, GitHub / GitLab repositories the owner saved).
 Copied ones are already in the library and searchable. A link with status "gone" is no longer online.
 
 Disk and tape images (D64, D81, ADF, ST, MSA, IMG, SSD, DSD, ADL, TAP, TZX, MDR):
@@ -96,7 +96,7 @@ def build_server(library: str | Path):
             query: natural-language question or keywords, e.g. "SID filter cutoff register" or "$D011".
             system: optional system name or alias to restrict to (see list_systems), e.g. "C64".
             category: optional category, e.g. "Programming Reference", "Schematics", "Pinouts", "Chip Datasheets",
-                      "User Guides & Manuals", "Service & Repair", "Photos", "Emulator Source", "Firmware & ROMs",
+                      "User Guides & Manuals", "Service & Repair", "Photos", "Source", "Firmware & ROMs",
                       "Disk & Tape Images", "My Notes".
             limit: number of passages to return (1-30).
             mode: "hybrid" (default), "keyword" (exact terms, good for register names / addresses) or "semantic".

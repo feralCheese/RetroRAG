@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from .config import LibrarySettings
+from .config import LibrarySettings, canonical_category
 
 SCHEMA_VERSION = 1
 
@@ -119,7 +119,7 @@ CREATE TABLE IF NOT EXISTS links (
     url TEXT NOT NULL,
     title TEXT DEFAULT '',
     note TEXT DEFAULT '',
-    mode TEXT DEFAULT 'link',        -- link (saved only) | page | site (the page and the pages under it) | repo (GitHub)
+    mode TEXT DEFAULT 'link',        -- link (saved only) | page | site (the page and the pages under it) | repo (GitHub / GitLab)
     category TEXT DEFAULT '',        -- where copies go
     max_pages INTEGER DEFAULT 100,   -- site: page limit
     include_files INTEGER DEFAULT 1, -- site: also copy PDFs / text files the pages link to
@@ -228,7 +228,7 @@ class Document:
 
 
 LINK_MODES = {"link": "Saved link", "page": "Copy of the page", "site": "Copy of the page and the pages under it",
-              "repo": "Copy of the GitHub repository"}
+              "repo": "Copy of the repository"}
 NOT_DUE = ("gone", "refused", "error")    # links nobody needs reminding about (until they're edited or retried)
 
 
@@ -312,6 +312,51 @@ class Library:
             if "link_id" not in dcols:        # ... or before links
                 c.execute("ALTER TABLE documents ADD COLUMN link_id INTEGER REFERENCES links(id) ON DELETE SET NULL")
             c.execute("CREATE INDEX IF NOT EXISTS idx_docs_link ON documents(link_id)")
+        self._rename_categories()
+
+    def _rename_categories(self) -> None:
+        """Categories renamed since the library was made (config.RENAMED_CATEGORIES) get their new name on documents
+        and links, and their folders on disk are renamed to match (with the stored paths). A folder that can't be
+        renamed (a file in it is open, or one with the new name exists already) stays, and its files keep working
+        where they are; new files go into the new folder."""
+        from .config import RENAMED_CATEGORIES
+        c = self.conn()
+        for old, new in RENAMED_CATEGORIES.items():
+            systems = [r[0] for r in c.execute("SELECT DISTINCT system_id FROM documents WHERE category=?", (old,))]
+            if not systems and not c.execute("SELECT 1 FROM links WHERE category=? LIMIT 1", (old,)).fetchone():
+                continue
+            for sid in systems:
+                s = self.system(sid)
+                if s:
+                    for sub in ("", "_derived/"):
+                        base = f"systems/{s.slug}/{sub}"
+                        self._rename_folder(base + slugify(old), base + slugify(new))
+            with c:
+                c.execute("UPDATE documents SET category=? WHERE category=?", (new, old))
+                c.execute("UPDATE links SET category=? WHERE category=?", (new, old))
+
+    def _rename_folder(self, old: str, new: str) -> None:
+        """Rename a folder of the library (paths relative to it) and the documents' stored paths in it."""
+        a, b = self.root / old, self.root / new
+        if old == new or not a.is_dir() or b.exists():
+            return
+        try:
+            a.rename(b)
+        except OSError:
+            return
+        c = self.conn()
+        pa, pb = old + "/", new + "/"
+        try:
+            with c:
+                for col in ("path", "text_path"):
+                    c.execute(f"UPDATE documents SET {col} = ? || substr({col}, ?) WHERE substr({col}, 1, ?) = ?",
+                              (pb, len(pa) + 1, len(pa), pa))
+        except Exception:
+            try:
+                b.rename(a)          # put it back, so the stored paths still lead to the files
+            except OSError:
+                pass
+            raise
 
     # ------------------------------------------------------------------ plumbing
     def conn(self) -> sqlite3.Connection:
@@ -638,7 +683,7 @@ class Library:
         if system_id is not None:
             q += " AND system_id=?"; p.append(system_id)
         if category:
-            q += " AND category=?"; p.append(category)
+            q += " AND category=?"; p.append(canonical_category(category))
         if where:
             q += " AND " + where; p.extend(params)
         q += " ORDER BY category, group_path, title COLLATE NOCASE"
@@ -687,7 +732,7 @@ class Library:
             d = self.document(did)
             if not d:
                 continue
-            cat = category or d.category
+            cat = canonical_category(category) or d.category
             group = d.group_path if group_path is None else group_path.strip("/")
             if d.system_id == system_id and cat == d.category and group == d.group_path:
                 continue
@@ -805,6 +850,8 @@ class Library:
     def add_link(self, system_id: int, url: str, **kw: Any) -> Link:
         url = normalise_url(url)
         vals = {k: v for k, v in kw.items() if k in self.LINK_FIELDS and k not in ("url", "system_id")}
+        if vals.get("category"):
+            vals["category"] = canonical_category(vals["category"])
         if vals.get("mode", "link") not in LINK_MODES:
             raise ValueError(f"Unknown link mode {vals['mode']!r}")
         cols = ["system_id", "url", "created", *vals]
@@ -817,6 +864,8 @@ class Library:
         sets = {k: v for k, v in kw.items() if k in self.LINK_FIELDS}
         if "url" in sets:
             sets["url"] = normalise_url(sets["url"])
+        if sets.get("category"):
+            sets["category"] = canonical_category(sets["category"])
         if not sets:
             return
         with self.conn() as c:

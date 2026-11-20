@@ -192,11 +192,11 @@ class MainWindow(QMainWindow):
 
         self.a_add_system = A("New system", self.add_system, "Ctrl+Shift+N", "Add a retro system", "add")
         self.a_add_files = A("Add files", self.add_files_dialog, "Ctrl+O", "Add documents, images, ROMs, disk images…", "doc")
-        self.a_add_folder = A("Add folder", self.add_folder_dialog, None, "Add a whole folder, e.g. emulator source", "folder")
+        self.a_add_folder = A("Add folder", self.add_folder_dialog, None, "Add a whole folder, e.g. a source tree", "folder")
         self.a_add_note = A("Add note", lambda: self.edit_note(None), "Ctrl+Shift+M",
                             "Write down your own findings about the selected system or peripheral", "edit")
         self.a_add_link = A("Add link", lambda: self.add_link(), "Ctrl+Shift+L",
-                            "Save a web page, docs site or GitHub repository for the selected system - and copy it "
+                            "Save a web page, docs site or GitHub / GitLab repository for the selected system - and copy it "
                             "into the library if you like", "link")
         self.a_ocr = A("Run OCR", self.ocr_selected_or_pending, "Ctrl+R",
                        "OCR the selected documents (or every document that needs it)", "scan")
@@ -461,7 +461,7 @@ class MainWindow(QMainWindow):
                  "Peripherals and expansions (a 1541 drive, a Tube second processor, an Amiga accelerator) are "
                  "systems too: right-click a machine - <b>Add peripheral / expansion</b>."),
             step(2, "Add files or folders", "Or drag &amp; drop onto a system or category: manuals, programming "
-                 "references, schematics, pinouts, datasheets (PDF, GIF, JPG, PNG, TIFF, TXT, HTML), emulator source "
+                 "references, schematics, pinouts, datasheets (PDF, GIF, JPG, PNG, TIFF, TXT, HTML), source "
                  "trees, ROMs/firmware, disk &amp; tape images (D64, ADF, TAP, TZX, DSK…). Zips are unpacked."),
             step(3, "Run OCR", "Words Tesseract is unsure about are written as <code>{?w0rd|42?}</code>."),
             step(4, "Proofread", "Double-click a document. <b>F3</b> selects the next flagged word - type the fix - "
@@ -482,7 +482,7 @@ class MainWindow(QMainWindow):
 <table cellspacing=0 cellpadding=0>{steps}</table>
 <p style='color:{t['muted']};margin-top:14px'><b>Add note</b> (Ctrl+Shift+M) keeps your own findings about a
 system or peripheral in <i>My Notes</i>; the AI is told they're yours. <b>Add link</b> (Ctrl+Shift+L) saves a web
-page, docs site or GitHub repository - and can copy it into the library, so local AIs can search it and it survives
+page, docs site or GitHub / GitLab repository - and can copy it into the library, so local AIs can search it and it survives
 the site going away. RetroRAG reminds you here when copies are due for a re-check.</p>
 <p style='color:{t['muted']};margin-top:6px'>Tip: for schematics and pinouts, re-OCR a page in the editor with
 layout mode <i>11 - Sparse text</i>, and use the Notes field - notes and tags are searchable even when OCR can't
@@ -758,7 +758,7 @@ read a drawing.</p>
         ln.setData(0, ROLE, ("links", system_id))
         ln.setIcon(0, theme.icon("link", t["accent"]))
         ln.setForeground(1, QColor(t["warn"] if due else t["muted"]))
-        ln.setToolTip(0, "Web pages, docs sites and GitHub repositories saved for this system. Copied ones are in "
+        ln.setToolTip(0, "Web pages, docs sites and GitHub / GitLab repositories saved for this system. Copied ones are in "
                          "the categories above too.")
         si.addChild(ln)
         for l in links:
@@ -970,7 +970,7 @@ read a drawing.</p>
             if self.tabs.currentWidget() is self.home:
                 self.tabs.setCurrentWidget(self.doc_panel)
         elif key:
-            # system / category / folder (e.g. an emulator source tree): no single document -> no preview
+            # system / category / folder (e.g. a source tree): no single document -> no preview
             self.doc_panel.show_doc(None)
 
     def _double_clicked(self, it, _col):

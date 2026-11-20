@@ -25,7 +25,7 @@ def create_app(library: str | Path):
     lib = Library(library)
     app = FastAPI(title="RetroRAG", version=APP_VERSION,
                   description="Search a library of retro computer & console documentation "
-                              "(manuals, programming references, schematics, pinouts, datasheets, emulator source).")
+                              "(manuals, programming references, schematics, pinouts, datasheets, source code).")
     app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["GET", "POST"], allow_headers=["*"])
 
     class SearchRequest(BaseModel):

@@ -6,7 +6,7 @@ and other AI systems (including locally hosted ones such as Unsloth Studio, Olla
 ![RetroRAG's main window: the library tree of systems, peripherals and categories on the left, a VIC-20 manual's OCR status and details in the middle, and its scanned cover in the preview](docs/screenshot.webp)
 
 - Organise by **system** (C64, Amiga 500, ZX Spectrum, NES…) and **category**: user guides, programming reference,
-  schematics, pinouts, chip datasheets, service & repair, photos, books & magazines, emulator source, firmware &
+  schematics, pinouts, chip datasheets, service & repair, photos, books & magazines, source code, firmware &
   ROMs, disk & tape images.
 - Add **PDF, GIF, JPG, PNG, TIFF, BMP, TXT, MD, HTML, RTF, Word (DOC/DOCX), Excel (XLS/XLSX), source code, ROMs, disk/tape images, ZIPs**, or whole folders
   (e.g. an emulator's source tree). Drag & drop onto a system or category. Each file's category is guessed
@@ -28,7 +28,7 @@ and other AI systems (including locally hosted ones such as Unsloth Studio, Olla
   includes its peripherals, and the AI is told which is which.
 - **My Notes**: write down your own findings about a system or peripheral. They're searchable, and the AI knows
   they're yours.
-- **Links**: save web pages, docs sites and GitHub repositories on a system, and copy them into the library so
+- **Links**: save web pages, docs sites and GitHub or GitLab repositories on a system, and copy them into the library so
   they're searchable offline and survive the site going away. RetroRAG reminds you to re-check them and marks
   sites that have gone.
 - **Hybrid search**: keyword (BM25, with hex-address normalisation so `$D020`, `0xD020` and `D020h` all match)
@@ -82,7 +82,7 @@ Windows 11-style light and dark themes using the Segoe Fluent icon set. *View �
 
 1. **➕ System**: name, aliases (`C64, CBM 64`, used for search filters), manufacturer, year, CPU, notes.
 2. **Add files / Add folder** (or drag & drop). *Copy into library* (the default) keeps the library
-   self-contained. For folders you can choose which file types to include; for emulator source the default is
+   self-contained. For folders you can choose which file types to include; for source code the default is
    text and code only.
    - **Categories are per file.** *Add files* lists each file with its type and a category guessed from it, which
      you can change: PDFs and documents go to *User Guides & Manuals*, or to *Schematics*, *Service & Repair*,
@@ -143,7 +143,7 @@ Windows 11-style light and dark themes using the Segoe Fluent icon set. *View �
      register addresses (`$D400` and `54272` count as the same), and very similar content. Tick the ones
      to keep; dismissed suggestions don't come back.
    - Links matter most for documents search can't connect on its own: schematics and pinouts with little
-     text (give them notes and tags too), emulator source vs. prose manuals, and errata or newer revisions.
+     text (give them notes and tags too), source code vs. prose manuals, and errata or newer revisions.
 5. **⚙ Build index** (F5). This runs automatically after changes unless you turn it off in the Index menu.
    Disk and tape images have their own tools; see [Disk and tape images](#disk-and-tape-images).
 6. Try queries in **Search test**. You see exactly what the AI receives.
@@ -192,7 +192,7 @@ note. Choose how to keep it:
 | Just save the link | The AI is told about it (in `list_systems`). Good for Claude, which can browse; local AIs can't. |
 | Copy this page | The page is copied into the library (or the PDF / text file the link points straight at). |
 | Copy this page and the pages under it | Pages whose address starts with the same folder on the same site, up to a page limit (100 by default), plus the PDFs and text files they link to on that site. |
-| Copy the GitHub repository | One zip download of a branch, tag or commit, imported like a source tree. A `/tree/<branch>/<folder>` link copies just that folder. |
+| Copy the repository | A GitHub or GitLab repository (gitlab.com or a self-hosted GitLab): one zip download of a branch, tag or commit through the site's API, imported like a source tree into *Source*. A folder link (`/tree/<branch>/<folder>`, on GitLab `/-/tree/<branch>/<folder>`) copies just that folder. A link to one file copies its raw text. |
 
 - **Copies are searchable, work offline and with local AIs, and survive the site disappearing.** Each copied file
   keeps its address as its source, so citations point back to it.
@@ -433,9 +433,9 @@ Add `--library <folder>` to any command to use a library other than the last-ope
 - The servers are read-only apart from notes the AI saves when asked, and disk / tape images: creating them and
   adding files writes into the library, and uploads and downloads use its `_transfer` folder. The REST API allows any origin (CORS) so browser-based
   tools can call it. Keep it on 127.0.0.1 or set an access token.
-- Web copies read the HTML a site sends. Pages drawn by JavaScript in the browser, sites behind a login and
-  other git hosts than GitHub aren't copied (use *Copy this page and the pages under it* for a GitLab or other web
-  view). Copies are for your own reference, like downloading a PDF manual: don't share a library containing them
+- Web copies read the HTML a site sends. Pages drawn by JavaScript in the browser and sites behind a login
+  aren't copied. GitHub and GitLab repositories are copied through their APIs instead; other git hosts (Codeberg,
+  Bitbucket, SourceForge…) aren't, so download those and add the folder. Copies are for your own reference, like downloading a PDF manual: don't share a library containing them
   publicly.
 - Disk and tape support covers ordinary sector images. Flux-level and copy-protection formats (G64, IPF, STX, WOZ,
   SCP…) aren't opened, though they still get an info card. Commodore REL files and Spectrum array files can be

@@ -2,7 +2,7 @@
 
 Why: search already connects text-rich documents about the same topic. Explicit links help where it can't:
   * text-poor documents (schematics, pinouts, chip photos) that OCR can't describe,
-  * different vocabulary (emulator source code vs. a prose manual),
+  * different vocabulary (source code vs. a prose manual),
   * authority (errata, newer revisions) and
   * multi-step questions (pinout -> datasheet -> KERNAL listing).
 Links are shown to the AI next to search hits (titles only - cheap), through the MCP tool get_related, in each
@@ -220,7 +220,7 @@ def _guess_kind(a: Document, b: Document) -> tuple[str, int, int]:
     """Pick a link type (and direction) from the two documents' categories / kinds."""
     def pin(d): return d.category in ("Pinouts", "Schematics")
     def sheet(d): return d.category == "Chip Datasheets"
-    def code(d): return d.kind == "code" or d.category in ("Emulator Source", "Firmware & ROMs")
+    def code(d): return d.kind == "code" or d.category in ("Source", "Firmware & ROMs")
     for test, kind in ((pin, "pinout_for"), (sheet, "datasheet_for"), (code, "implements")):
         if test(a) and not test(b):
             return kind, a.id, b.id

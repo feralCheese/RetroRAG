@@ -20,7 +20,7 @@ from . import theme
 from .editor import MarkerHighlighter, PageView
 
 MAX_PREVIEW_CHARS = 400_000
-SOURCE_TREE_CATEGORIES = ("Emulator Source", "Firmware & ROMs")
+SOURCE_TREE_CATEGORIES = ("Source", "Firmware & ROMs")
 
 
 def wants_preview(d: Document | None) -> bool:

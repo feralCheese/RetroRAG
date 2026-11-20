@@ -231,7 +231,7 @@ class MoveDialog(QDialog):
 # =========================================================================== add files
 BY_TYPE_TIP = ("Each file goes under its own type's category: documents to User Guides & Manuals (or Schematics, "
                "Service & Repair... when the name says so), photos to Photos, disk images to Disk & Tape Images, "
-               "source code to Emulator Source...")
+               "source code to Source...")
 
 
 def category_box(value: str, by_type: bool = False) -> QComboBox:
@@ -333,7 +333,7 @@ class AddDialog(QDialog):
     def _cat_changed(self, cat: str):
         if not self.kinds:
             return
-        src = cat == "Emulator Source"
+        src = cat == "Source"
         self.kinds["image"].setChecked(not src)
         self.kinds["binary"].setChecked(not src)
 

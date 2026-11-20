@@ -221,11 +221,23 @@ CATEGORIES = [
     "Service & Repair",
     "Photos",
     "Books & Magazines",
-    "Emulator Source",
+    "Source",
     "Firmware & ROMs",
     "Disk & Tape Images",
     "Other",
 ]
+
+# Categories with new names: a library made with an old one is updated when it's opened (Library.__init__), and
+# the old name still works in searches and when adding files
+RENAMED_CATEGORIES = {"Emulator Source": "Source"}
+
+
+def canonical_category(name: str | None) -> str | None:
+    """A category's current name (the same name unless it was renamed)."""
+    if not name:
+        return name
+    return next((new for old, new in RENAMED_CATEGORIES.items() if name.strip().lower() == old.lower()), name)
+
 
 SYSTEM_KINDS = ["Home computer", "Console", "Handheld", "Arcade", "Workstation", "Peripheral", "Expansion / add-on",
                 "Second processor", "Other"]

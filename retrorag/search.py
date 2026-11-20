@@ -115,7 +115,8 @@ def _filters(lib: Library, system: str | None, category: str | None, kinds: list
         ids = lib.system_scope(s.id, peripherals=peripherals) if s else [-1]
         where.append(f"d.system_id IN ({','.join('?' * len(ids))})"); params += ids
     if category:
-        where.append("d.category LIKE ?"); params.append(category)
+        from .config import canonical_category
+        where.append("d.category LIKE ?"); params.append(canonical_category(category))
     if kinds:
         where.append(f"d.kind IN ({','.join('?' * len(kinds))})"); params += list(kinds)
     return where, params

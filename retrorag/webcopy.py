@@ -6,10 +6,12 @@ into the library, so it can be searched, works offline and with local AIs, and s
     page   the page itself (or a PDF / text file the link points straight at)
     site   the page and the pages under it on the same site (same address prefix), up to a page limit, plus the
            PDFs and text files those pages link to on that site
-    repo   a GitHub repository (one zip download of a branch, tag or commit), imported like a source tree
+    repo   a GitHub or GitLab repository (one zip download of a branch, tag or commit), imported like a source tree
 
 Copying is polite: one request a second (or the site's Crawl-delay), robots.txt is respected, and nothing outside
 the site is fetched. Each copied file keeps its address as its source, and re-copying updates only what changed.
+Repositories, and single files in them, are fetched through GitHub's and GitLab's public APIs and raw-file
+addresses - their own web pages are drawn by JavaScript, so there's nothing in them to copy.
 
 Every link has a reminder period (refresh_days). A link that can't be reached is retried a day later; one whose
 page is gone (404 / 410, or unreachable on attempts at least GONE_AFTER_DAYS apart) is marked "gone": the copy stays
@@ -57,6 +59,13 @@ GITHUB_NOT_OWNERS = {"features", "topics", "marketplace", "settings", "orgs", "u
                      "notifications", "new", "codespaces", "issues", "pulls", "readme", "security", "customer-stories"}
 _GH = re.compile(r"^https?://(?:www\.)?github\.com/([\w.-]+)/([\w.-]+?)(?:\.git)?"
                  r"(?:/(tree|blob|commit|releases/tag)/([^/?#]+)(?:/([^?#]*))?)?/?(?:[?#].*)?$", re.I)
+# GitLab sites: gitlab.com, sites called gitlab.<something>, these well-known ones, and any address with GitLab's
+# '/-/tree/' or '/-/blob/' in it
+GITLAB_HOSTS = {"gitlab.com", "salsa.debian.org", "invent.kde.org", "framagit.org", "code.videolan.org"}
+GITLAB_NOT_GROUPS = {"-", "explore", "users", "groups", "dashboard", "help", "admin", "search", "projects", "api",
+                     "uploads", "assets", "snippets", "s", "oauth", "import", "jwt", "profile", "public"}
+GITLAB_KINDS = {"tree": False, "blob": True, "raw": True}          # -> is it a single file?
+_SEGMENT = re.compile(r"[\w.-]+")
 
 
 class LinkError(Exception):
@@ -77,26 +86,66 @@ class Refused(LinkError):
 
 # ======================================================================== addresses
 def github_repo(url: str) -> dict | None:
-    """'https://github.com/owner/repo[/tree/<ref>[/path]]' -> {owner, repo, ref, path, blob}; None if not a repo."""
+    """'https://github.com/owner/repo[/tree/<ref>[/path]]' -> a repository address (see repo_address); None if
+    it isn't one."""
     m = _GH.match((url or "").strip())
     if not m or m.group(1).lower() in GITHUB_NOT_OWNERS:
         return None
     kind = (m.group(3) or "").lower()
-    return {"owner": m.group(1), "repo": m.group(2), "ref": unquote(m.group(4) or ""),
-            "path": unquote((m.group(5) or "").strip("/")), "blob": kind == "blob"}
+    return {"forge": "github", "site": "GitHub", "host": "github.com", "base": "https://github.com",
+            "project": f"{m.group(1)}/{m.group(2)}", "owner": m.group(1), "repo": m.group(2),
+            "ref": unquote(m.group(4) or ""), "path": unquote((m.group(5) or "").strip("/")), "blob": kind == "blob"}
+
+
+def gitlab_repo(url: str) -> dict | None:
+    """'https://gitlab.com/group[/subgroup...]/project[/-/tree/<ref>[/path]]' -> a repository address (see
+    repo_address); None if it isn't one."""
+    try:
+        p = urlsplit((url or "").strip())
+    except ValueError:
+        return None
+    host = p.netloc.lower()
+    if p.scheme not in ("http", "https") or not host:
+        return None
+    project, sep, rest = p.path.strip("/").partition("/-/")
+    parts = rest.split("/", 2) if sep else []
+    kind = parts[0].lower() if parts else ""
+    if sep and kind not in GITLAB_KINDS:          # issues, wikis, releases... pages, not the repository
+        return None
+    if not sep and not (host in GITLAB_HOSTS or host.startswith("gitlab.")):
+        return None
+    segs = project.split("/")
+    if segs and segs[-1].lower().endswith(".git"):
+        segs[-1] = segs[-1][:-4]
+    if len(segs) < 2 or segs[0].lower() in GITLAB_NOT_GROUPS or not all(_SEGMENT.fullmatch(s) for s in segs):
+        return None
+    return {"forge": "gitlab", "site": "GitLab", "host": host, "base": f"{p.scheme}://{p.netloc}",
+            "project": "/".join(segs), "owner": "/".join(segs[:-1]), "repo": segs[-1],
+            "ref": unquote(parts[1]) if len(parts) > 1 else "",
+            "path": unquote(parts[2].strip("/")) if len(parts) > 2 else "", "blob": GITLAB_KINDS.get(kind, False)}
+
+
+def repo_address(url: str) -> dict | None:
+    """A GitHub or GitLab repository address -> {forge ('github' / 'gitlab'), site (its name), host, base
+    ('https://host'), project ('owner/repo', or 'group/subgroup/project' on GitLab), owner, repo (the last part),
+    ref (branch / tag / commit, '' = the default branch), path (a folder or file in it), blob (a single file)};
+    None for any other address."""
+    return github_repo(url) or gitlab_repo(url)
 
 
 def guess_mode(url: str) -> str:
-    gh = github_repo(url)
-    return "repo" if gh and not gh["blob"] else "page"
+    rp = repo_address(url)
+    return "repo" if rp and not rp["blob"] else "page"
 
 
-def raw_github(url: str) -> str:
-    """A github.com '/blob/' page is mostly JavaScript: fetch the raw file instead."""
-    gh = github_repo(url)
-    if gh and gh["blob"] and gh["ref"] and gh["path"]:
-        return (f"https://raw.githubusercontent.com/{gh['owner']}/{gh['repo']}/{quote(gh['ref'], safe='')}/"
-                f"{quote(gh['path'])}")
+def raw_file_url(url: str) -> str:
+    """A file's page on GitHub or GitLab is mostly JavaScript: fetch the raw file instead."""
+    rp = repo_address(url)
+    if rp and rp["blob"] and rp["ref"] and rp["path"]:
+        ref, path = quote(rp["ref"], safe=""), quote(rp["path"])
+        if rp["forge"] == "github":
+            return f"https://raw.githubusercontent.com/{rp['project']}/{ref}/{path}"
+        return f"{rp['base']}/{rp['project']}/-/raw/{ref}/{path}"
     return url
 
 
@@ -268,8 +317,10 @@ class _Store:
     def __init__(self, lib: Library, link: Link, log):
         self.lib, self.link, self.log = lib, link, log
         self.system = lib.system(link.system_id)
-        default = "Emulator Source" if link.mode == "repo" else "User Guides & Manuals"
-        self.category = (link.category or "").strip() or default
+        from .categorize import MANUALS, SOURCE
+        from .config import canonical_category
+        default = SOURCE if link.mode == "repo" else MANUALS
+        self.category = canonical_category((link.category or "").strip()) or default
         self.tmp = Path(tempfile.mkdtemp(prefix="retrorag-copy-"))
         self.counts = {"added": 0, "updated": 0, "same": 0, "duplicate": 0, "removed": 0}
         self.seen: set[str] = set()
@@ -346,13 +397,16 @@ def _js_only(page_text: str, scripts: int) -> bool:
 
 def _copy_pages(lib: Library, link: Link, store: _Store, site: bool, progress, log) -> str:
     from .htmltext import parse_html
-    start = _norm(raw_github(link.url))
+    raw = raw_file_url(link.url)
+    start = _norm(raw)
     prefix = scope_prefix(start)
     host = urlsplit(start).netloc
     limit = max(1, int(link.max_pages or 100)) if site else 1
     with _client() as cl:
         robots = _Robots(cl)
-        if not robots.allowed(start):
+        # One file of a repository, asked for by its owner, is fetched the way a git client would; GitLab's
+        # robots.txt keeps crawlers off its raw-file addresses, which isn't meant for this
+        if raw == link.url and not robots.allowed(start):
             raise Refused(f"{host} asks programs like RetroRAG not to copy this page (its robots.txt). "
                           "The link is kept; you could save the page from your browser and add the file instead.")
         delay = robots.delay(start)
@@ -403,6 +457,11 @@ def _copy_pages(lib: Library, link: Link, store: _Store, site: bool, progress, l
                         first = False
                         continue
                 if _js_only(pg.text, pg.scripts):
+                    rp = repo_address(link.url) if first else None
+                    if rp and not rp["blob"]:
+                        raise LinkError(f"This is a {rp['site']} repository: its pages are built by JavaScript, so "
+                                        "there's no text in them to copy. Edit the link and choose 'Copy the "
+                                        "repository' to copy its files instead.")
                     if first:
                         raise LinkError("This page is built by JavaScript in the browser, so there's no text for "
                                         "RetroRAG to copy. Try another page of the site, or save the page from your "
@@ -453,89 +512,149 @@ def _copy_pages(lib: Library, link: Link, store: _Store, site: bool, progress, l
     return store.summary(what)
 
 
-# ======================================================================== GitHub repositories
+# ======================================================================== GitHub / GitLab repositories
+def _json(r: _Resp):
+    import json
+    try:
+        return json.loads(r.content)
+    except ValueError:
+        return None
+
+
+def _github_commit(cl, rp: dict, ref: str) -> tuple[str, str, str]:
+    """-> (ref, commit, address of its zip)"""
+    api = f"https://api.github.com/repos/{rp['project']}"
+    r = fetch(cl, api, limit=2 << 20, headers={"Accept": "application/vnd.github+json"})
+    if r.status == 404:
+        raise Gone("The repository isn't on GitHub any more (deleted, renamed or made private)")
+    if r.status in (403, 429):
+        raise Unreachable("GitHub's limit for anonymous requests was reached - try again in an hour")
+    if r.status >= 400:
+        raise Unreachable(f"GitHub answered {r.status}")
+    ref = ref or (_json(r) or {}).get("default_branch") or "HEAD"
+    r = fetch(cl, f"{api}/commits/{quote(ref, safe='')}", limit=1 << 16,
+              headers={"Accept": "application/vnd.github.sha"})
+    if r.status in (404, 422):
+        raise LinkError(f"The repository has no branch, tag or commit called '{ref}'")
+    if r.status >= 400:
+        raise Unreachable(f"GitHub answered {r.status}")
+    sha = r.content.decode("ascii", "replace").strip()
+    return ref, sha, f"https://codeload.github.com/{rp['project']}/zip/{sha}"
+
+
+def _gitlab_commit(cl, rp: dict, ref: str, sub: str) -> tuple[str, str, str]:
+    """-> (ref, commit, address of its zip). GitLab's API lets anyone read public projects, on gitlab.com and on
+    most self-hosted GitLab sites; the zip can be just the linked folder."""
+    host = rp["host"]
+    enc = quote(rp["project"], safe="")
+    api = f"{rp['base']}/api/v4/projects/{enc}"
+    r = fetch(cl, api, limit=2 << 20)
+    if r.status == 429:
+        raise Unreachable(f"{host}'s limit for anonymous requests was reached - try again later")
+    if r.status >= 500:
+        raise Unreachable(f"{host} is having problems ({r.status})")
+    if "json" not in r.ctype:
+        raise LinkError(f"{host} doesn't answer like a GitLab site, so RetroRAG can't copy the repository. Save "
+                        "it as a link, or download the files and add them.")
+    if r.status in (401, 403):
+        raise LinkError(f"{host} only shows this project to people who are signed in - RetroRAG can copy public "
+                        "projects only. Download it and add the folder instead.")
+    if r.status == 404:
+        g = fetch(cl, f"{rp['base']}/api/v4/groups/{enc}", limit=1 << 20)
+        if g.status == 200 and "json" in g.ctype:
+            raise LinkError(f"{rp['project']} is a GitLab group, not a project - link one of its projects")
+        raise Gone("The project isn't on GitLab any more (deleted, renamed or made private)")
+    if r.status >= 400:
+        raise Unreachable(f"{host} answered {r.status}")
+    info = _json(r) or {}
+    if info.get("empty_repo"):
+        raise LinkError("The project's repository is empty")
+    ref = ref or info.get("default_branch") or "HEAD"
+    r = fetch(cl, f"{api}/repository/commits/{quote(ref, safe='')}", limit=1 << 20)
+    if r.status == 404:
+        raise LinkError(f"The repository has no branch, tag or commit called '{ref}'")
+    if r.status in (401, 403):
+        raise LinkError(f"{host} doesn't show this project's files to people who aren't signed in")
+    if r.status >= 400:
+        raise Unreachable(f"{host} answered {r.status}")
+    sha = str((_json(r) or {}).get("id") or "").strip()
+    if not sha:
+        raise Unreachable(f"{host} didn't say which commit '{ref}' is")
+    return ref, sha, f"{api}/repository/archive.zip?sha={sha}" + (f"&path={quote(sub, safe='')}" if sub else "")
+
+
 def _copy_repo(lib: Library, link: Link, store: _Store, progress, log) -> str:
     from . import ingest
-    gh = github_repo(link.url)
-    if not gh:
-        raise LinkError("That isn't a GitHub repository address (https://github.com/<owner>/<repository>)")
-    owner, repo = gh["owner"], gh["repo"]
-    ref = link.branch.strip() or gh["ref"]
-    sub = gh["path"]
-    api = f"https://api.github.com/repos/{owner}/{repo}"
-    js = {"Accept": "application/vnd.github+json"}
+    rp = repo_address(link.url)
+    if not rp:
+        raise LinkError("That isn't a repository address (https://github.com/<owner>/<repository> or "
+                        "https://gitlab.com/<group>/<project>)")
+    name, ref, sub = rp["project"], link.branch.strip() or rp["ref"], rp["path"]
+    web = f"{rp['base']}/{name}" + ("/" if rp["forge"] == "github" else "/-/")      # .../tree/..., .../blob/...
     with _client() as cl:
-        r = fetch(cl, api, limit=2 << 20, headers=js)
-        if r.status == 404:
-            raise Gone("The repository isn't on GitHub any more (deleted, renamed or made private)")
-        if r.status in (403, 429):
-            raise Unreachable("GitHub's limit for anonymous requests was reached - try again in an hour")
-        if r.status >= 400:
-            raise Unreachable(f"GitHub answered {r.status}")
-        import json
-        info = json.loads(r.content)
-        ref = ref or info.get("default_branch") or "HEAD"
-        r = fetch(cl, f"{api}/commits/{quote(ref, safe='')}", limit=1 << 16,
-                  headers={"Accept": "application/vnd.github.sha"})
-        if r.status in (404, 422):
-            raise LinkError(f"The repository has no branch, tag or commit called '{ref}'")
-        if r.status >= 400:
-            raise Unreachable(f"GitHub answered {r.status}")
-        sha = r.content.decode("ascii", "replace").strip()
+        if rp["forge"] == "github":
+            ref, sha, zip_url = _github_commit(cl, rp, ref)
+        else:
+            ref, sha, zip_url = _gitlab_commit(cl, rp, ref, sub)
         if sha == link.version and lib.link_doc_ids(link.id):
             return f"No changes since the last copy (commit {sha[:10]})"
         if not link.title:
-            lib.update_link(link.id, title=f"{owner}/{repo}" + (f"/{sub}" if sub else ""))
+            lib.update_link(link.id, title=name + (f"/{sub}" if sub else ""))
         if progress:
-            progress(0, 0, f"downloading {owner}/{repo} @ {ref}")
-        z = fetch(cl, f"https://codeload.github.com/{owner}/{repo}/zip/{sha}", limit=MAX_REPO)
+            progress(0, 0, f"downloading {name} @ {ref}")
+        z = fetch(cl, zip_url, limit=MAX_REPO)
         if z.status >= 400:
-            raise Unreachable(f"GitHub didn't send the repository ({z.status})")
+            raise Unreachable(f"{rp['site']} didn't send the repository ({z.status})")
     out = store.tmp / "repo"
-    with zipfile.ZipFile(io.BytesIO(z.content)) as zf:
+    out.mkdir(parents=True, exist_ok=True)
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(z.content))
+    except zipfile.BadZipFile:
+        raise Unreachable(f"{rp['site']} sent something that isn't the repository's zip - try again later")
+    with zf:
         members = [m for m in zf.infolist() if not m.is_dir()]
+        tops = {m.filename.split("/", 1)[0] for m in members}
+        top = (tops.pop() + "/") if len(tops) == 1 and all("/" in m.filename for m in members) else ""
+        want = top + (sub + "/" if sub else "")          # the zip's one top folder, then the linked folder
+        members = [m for m in members if m.filename.startswith(want)]
+        if sub and not members:
+            raise LinkError(f"The repository has no folder '{sub}'")
         if len(members) > MAX_REPO_FILES:
             raise LinkError(f"The repository has too many files ({len(members)}) - link a folder of it instead "
-                            "(https://github.com/<owner>/<repo>/tree/<branch>/<folder>)")
+                            f"({web}tree/<branch>/<folder>)")
         root = out.resolve()
         for m in members:
-            target = (out / m.filename).resolve()
+            target = (out / m.filename[len(want):]).resolve()
             if root not in target.parents:
                 continue
             target.parent.mkdir(parents=True, exist_ok=True)
             with zf.open(m) as fsrc, open(target, "wb") as fdst:
                 shutil.copyfileobj(fsrc, fdst)
-    tops = [p for p in out.iterdir() if p.is_dir()]
-    base = tops[0] if len(tops) == 1 else out
-    if sub:
-        base = base / sub
-        if not base.is_dir():
-            raise LinkError(f"The repository has no folder '{sub}'")
-    files = ingest.iter_folder(base)
+    files = ingest.iter_folder(out)
     names = {f.as_posix().lower() for f in files}
     files = [f for f in files if not (f.suffix.lower() == ".md" and f.as_posix().lower()[:-3] in names)]
-    group_root = repo + (f"/{sub}" if sub else "")
+    group_root = rp["repo"] + (f"/{sub}" if sub else "")
+    blob = f"{web}blob/{quote(ref, safe='')}/"
     for i, f in enumerate(files):
         if progress and i % 10 == 0:
             progress(i, len(files), f.name)
-        rel = f.relative_to(base)
+        rel = f.relative_to(out)
         parent = rel.parent.as_posix()
         group = group_root if parent == "." else f"{group_root}/{parent}"
-        url = f"https://github.com/{owner}/{repo}/blob/{quote(ref, safe='')}/" + \
-              quote(((sub + "/") if sub else "") + rel.as_posix())
+        url = blob + quote(((sub + "/") if sub else "") + rel.as_posix())
         try:
             store.save_file(f, group, url, None)
         except Exception as e:
             log(f"  couldn't add {rel}: {e}")
     store.remove_missing()
     lib.update_link(link.id, version=sha)
-    return store.summary(f"Copied {owner}/{repo} at {ref} (commit {sha[:10]})")
+    return store.summary(f"Copied {name} at {ref} (commit {sha[:10]})")
 
 
 # ======================================================================== saved links
 def _check(lib: Library, link: Link) -> str:
     from .htmltext import parse_html
-    url = raw_github(link.url)
+    url = raw_file_url(link.url)
     with _client() as cl:
         r = fetch(cl, url, body=False)
         if r.status in (404, 410):
