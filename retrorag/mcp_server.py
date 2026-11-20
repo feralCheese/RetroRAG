@@ -16,13 +16,24 @@ from .library import Library
 from . import search as S
 
 INSTRUCTIONS = """RetroRAG is a reference library of documentation for retro computers and consoles: user guides,
-programming references, schematics, pinouts, chip datasheets, service manuals, source code (emulators, system software), firmware/ROM
-info cards and disk/tape image listings. Use `search_docs` first (optionally filtered by system or category), then
-`read_document` with a page range to read more around a hit. Systems can have variants (e.g. ZX Spectrum ->
-48K, 128K): filtering by a variant also returns the documents common to its whole family. Hits list `related` documents (pinouts, schematics,
-datasheets, the source code implementing a chip, errata, newer revisions) - follow them with `get_related` /
-`read_document` when the question spans several documents. Cite results as 'System / Document, page N'.
-Text from scanned documents is OCR output and may contain recognition errors.
+programming references, schematics, pinouts, chip datasheets, service manuals, source code (emulators, system
+software), firmware/ROM info cards, disk/tape image listings and the owner's own notes.
+
+Start here, for any question about a retro machine, its hardware or its software:
+1. `search_docs(query, system)` - e.g. query "trapdoor expansion", system "Amiga 500". `list_systems` gives the
+   system names and aliases, and each machine's peripherals and expansions.
+2. `read_document(doc_id, page_from, page_to)` to read around a hit; `view_page(doc_id, page)` to look at a scan
+   or photo.
+3. Answer from what you read, citing 'System / Document, page N'. If the library doesn't cover it, say so.
+These are ordinary tools of the MCP server "retrorag": there is no skill to load first. In an app that calls
+tools from code (OpenCode's `execute`), call them as `await tools.retrorag.search_docs({ query: "...", system:
+"Amiga 500" })` and `await tools.retrorag.read_document({ doc_id: 12, page_from: 3, page_to: 4 })`, with the
+argument names above.
+
+Systems can have variants (e.g. ZX Spectrum -> 48K, 128K): filtering by a variant also returns the documents
+common to its whole family. Hits list `related` documents (pinouts, schematics, datasheets, the source code
+implementing a chip, errata, newer revisions) - follow them with `get_related` / `read_document` when the
+question spans several documents. Text from scanned documents is OCR output and may contain recognition errors.
 Documents of kind "pdf" or "image" can be looked at with `view_page` (if you can see images): use it for what OCR
 can't give - schematics, pinout diagrams, photos of boards (chip markings, jumpers, switches), tables and layouts -
 or to check doubtful OCR text. Zoom in with `region` to read small print. The "Photos" category holds the owner's
@@ -61,8 +72,9 @@ def build_server(library: str | Path):
 
     @mcp.tool()
     def list_systems() -> list[dict]:
-        """List the retro systems in the library: aliases, document counts, variants, the peripherals and
-        expansions that work with each (and, for a peripheral, the machines it works with), and saved links."""
+        """List the retro systems in the RetroRAG library: names and aliases (use them as `system` in
+        search_docs), document counts, variants, the peripherals and expansions that work with each (and, for a
+        peripheral, the machines it works with), and saved links."""
         from .webcopy import describe_link
         lib.reload_settings()
         out = []
@@ -90,7 +102,9 @@ def build_server(library: str | Path):
     @mcp.tool()
     def search_docs(query: str, system: str | None = None, category: str | None = None,
                     limit: int = 8, mode: str = "hybrid", include_peripherals: bool = True) -> list[dict]:
-        """Search the retro documentation library.
+        """Search the RetroRAG library: manuals, programming references, schematics, pinouts, datasheets,
+        service docs, source code and the owner's notes for retro computers and consoles. Start here for any
+        question about a retro machine or its hardware, then read_document around a hit.
 
         Args:
             query: natural-language question or keywords, e.g. "SID filter cutoff register" or "$D011".
@@ -111,8 +125,9 @@ def build_server(library: str | Path):
     @mcp.tool()
     def list_documents(system: str | None = None, category: str | None = None, limit: int = 200,
                        include_peripherals: bool = True) -> list[dict]:
-        """List documents, optionally filtered by system (with its family and, by default, its peripherals and
-        expansions) and/or category - e.g. category "My Notes" for the owner's own notes."""
+        """List the documents in the RetroRAG library, optionally filtered by system (with its family and, by
+        default, its peripherals and expansions) and/or category - e.g. category "My Notes" for the owner's own
+        notes. To find something, search_docs is usually better."""
         names = {s.id: s.name for s in lib.systems()}
         if system:
             s = lib.find_system(system)
@@ -131,7 +146,9 @@ def build_server(library: str | Path):
     @mcp.tool()
     def read_document(doc_id: int, page_from: int | None = None, page_to: int | None = None,
                       max_chars: int = 30000) -> str:
-        """Read the text of a document (whole, or a page range for PDFs/scans). Use the doc_id from search results."""
+        """Read a RetroRAG document's text: whole, or a page range for PDFs and scans. Use the doc_id from
+        search_docs. max_chars caps the text (default 30,000 characters, about 8,000 tokens): with a small
+        context, read a page range or ask for less."""
         d = lib.document(doc_id)
         if not d:
             return f"No document with id {doc_id}"
@@ -146,8 +163,8 @@ def build_server(library: str | Path):
 
     @mcp.tool()
     def view_page(doc_id: int, page: int = 1, region: list[float] | None = None) -> list[TextContent | Image]:
-        """Look at a page of a scanned document or PDF, or at a picture (a photo of a board or machine, a
-        schematic, a pinout diagram), as an image. Use it for what OCR text can't give: drawings, chip markings,
+        """Look at a page of a RetroRAG document - a scan or PDF - or at a picture (a photo of a board or machine,
+        a schematic, a pinout diagram), as an image. Use it for what OCR text can't give: drawings, chip markings,
         jumper and switch settings, connectors, tables and page layout - or to check doubtful OCR text.
 
         Args:
@@ -170,7 +187,7 @@ def build_server(library: str | Path):
 
     @mcp.tool()
     def get_related(doc_id: int) -> list[dict]:
-        """Documents linked to this one: its pinout/schematic, datasheet, the source code that implements it,
+        """RetroRAG documents linked to this one: its pinout/schematic, datasheet, the source code that implements it,
         errata, newer or older revisions, chapters... Each entry says how it relates (from this document's view)."""
         from .relations import related
         if not lib.document(doc_id):
@@ -391,7 +408,7 @@ def build_server(library: str | Path):
 
     @mcp.tool()
     def get_context(chunk_id: int, before: int = 1, after: int = 1) -> str:
-        """Return a search hit together with the passages immediately before/after it."""
+        """A search_docs hit (its chunk_id) with the passages just before and after it in the document."""
         return S.neighbours(lib, chunk_id, max(0, min(before, 5)), max(0, min(after, 5)))
 
     return mcp

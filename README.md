@@ -271,6 +271,18 @@ Start the HTTP servers with **▶ Start servers** in the toolbar. You can make t
 | Open WebUI (OpenAPI tools), scripts | REST: `http://127.0.0.1:8765/search?q=...&system=C64`, docs at `/docs`, spec at `/openapi.json` |
 | Anything else / offline | Export → Markdown corpus (YAML front matter per doc) or JSONL chunks |
 
+**Choosing a model.** Use a model that's good at calling tools and has room to read: at least 32K tokens of
+context, and 64K or more is better. One `read_document` can bring back about 8K tokens, and the app around the
+model takes its share too: opencode's own instructions use about 10K before you've asked anything. Small local
+models struggle with this. A 12B model with a 16K context ran out of room after three tool calls and never got as far
+as reading a document. With Ollama, raise the context length (the *Context length* setting in the Ollama app, or
+`OLLAMA_CONTEXT_LENGTH=32768` for `ollama serve`). In opencode, `/models` shows and switches the model.
+
+**opencode 2** gives the AI MCP tools through its `execute` tool ("code mode") and shows it only some of each
+server's tools up front: for RetroRAG, the first few alphabetically, which leaves out `search_docs`. RetroRAG's
+instructions name the tools to start with and show the call (`await tools.retrorag.search_docs({ query, system })`),
+so a capable model goes straight to them. A weak one may still go looking first.
+
 MCP tools: `search_docs(query, system?, category?, limit, mode, include_peripherals)`, `list_systems` (with each
 system's variants, peripherals and links), `list_documents`, `read_document(doc_id, page_from?, page_to?)`,
 `view_page(doc_id, page?, region?)`, `get_related(doc_id)`, `get_context(chunk_id)`, and
