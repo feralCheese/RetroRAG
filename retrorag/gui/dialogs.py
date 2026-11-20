@@ -263,6 +263,7 @@ class AddDialog(QDialog):
         if system:
             self.system.setCurrentIndex(max(0, self.system.findData(system.id)))
         self.rows: list[tuple[Path, QComboBox]] = []
+        self.archive_rows: list[QComboBox] = []
         self.kinds = {}
         if folder:
             lbl = QLabel(str(paths[0])); lbl.setStyleSheet("color:gray"); lbl.setWordWrap(True)
@@ -274,7 +275,7 @@ class AddDialog(QDialog):
             f.addRow("Category", self.category)
         else:
             f.addRow("System", self.system)
-            QApplication.setOverrideCursor(Qt.WaitCursor)          # zips and pictures are looked inside
+            QApplication.setOverrideCursor(Qt.WaitCursor)          # archives and pictures are looked inside
             try:
                 guesses = [inspect_file(p) for p in paths]
             finally:
@@ -284,16 +285,22 @@ class AddDialog(QDialog):
             self.table.verticalHeader().setVisible(False)
             self.table.setSelectionMode(QAbstractItemView.NoSelection)
             self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+            from .. import archives
+            self.archive_rows: list[QComboBox] = []
             for r, (p, (cat, what)) in enumerate(zip(paths, guesses)):
                 it = QTableWidgetItem(p.name); it.setToolTip(str(p))
                 self.table.setItem(r, 0, it)
                 self.table.setItem(r, 1, QTableWidgetItem(what))
-                cb = category_box(cat, by_type=what.startswith("ZIP"))
+                is_archive = bool(archives.kind_by_name(p.name)) and what.startswith(("ZIP", "TAR"))
+                cb = category_box(cat, by_type=is_archive)
                 cb.setToolTip("Guessed from the file's type and name - change it if it's wrong."
-                              + ("\n'By file type' files each file in the zip under its own type's category."
-                                 if what.startswith("ZIP") else ""))
+                              + ("\n'By file type' files each file in the archive under its own type's category."
+                                 if is_archive else ""))
                 self.table.setCellWidget(r, 2, cb)
                 self.rows.append((p, cb))
+                if is_archive:
+                    self.archive_rows.append(cb)
+                    cb.currentTextChanged.connect(self._cat_changed)
             hh = self.table.horizontalHeader()
             hh.setSectionResizeMode(0, QHeaderView.Stretch)
             hh.setSectionResizeMode(1, QHeaderView.ResizeToContents)
@@ -310,14 +317,17 @@ class AddDialog(QDialog):
         self.copy = QCheckBox("Copy into the library (recommended - keeps the library self-contained and portable)")
         self.copy.setChecked(True)
         f.addRow("", self.copy)
-        if folder:
-            box = QGroupBox("Include file types")
+        if folder or self.archive_rows:
+            box = QGroupBox("Include file types" if folder else "Take these file types out of the archives")
             h = QHBoxLayout(box)
             for k, label, on in (("text", "Text/HTML", True), ("code", "Source code", True), ("pdf", "PDF", True),
                                  ("image", "Images", True), ("binary", "Binaries/ROMs/disk images", True)):
                 cb = QCheckBox(label); cb.setChecked(on); h.addWidget(cb); self.kinds[k] = cb
-            self.category.currentTextChanged.connect(self._cat_changed)
-            self._cat_changed(self.category.currentText())
+            if folder:
+                self.category.currentTextChanged.connect(self._cat_changed)
+                self._cat_changed(self.category.currentText())
+            else:
+                self._cat_changed(self.archive_rows[0].currentText())
             f.addRow(box)
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         bb.accepted.connect(self.accept); bb.rejected.connect(self.reject)
@@ -331,6 +341,7 @@ class AddDialog(QDialog):
             cb.setCurrentText(category)
 
     def _cat_changed(self, cat: str):
+        """Source code: text and code only by default (no ROMs, icons or screenshots from the tree)."""
         if not self.kinds:
             return
         src = cat == "Source"
@@ -372,7 +383,8 @@ class SettingsDialog(QDialog):
         self.portable.setChecked(is_portable())
         self.portable.setToolTip(f"Creates/removes {app_root() / 'portable.flag'}")
         f.addRow(self.portable)
-        self.extract_zip = QCheckBox("Extract .zip archives when adding"); self.extract_zip.setChecked(st.extract_archives)
+        self.extract_zip = QCheckBox("Unpack archives (.zip, .tar.gz, .tgz, .tar.bz2, .tar.xz) when adding")
+        self.extract_zip.setChecked(st.extract_archives)
         f.addRow(self.extract_zip)
 
         # --- OCR

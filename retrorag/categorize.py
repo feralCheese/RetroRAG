@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import io
 import re
-import zipfile
 from pathlib import Path
 from typing import Callable
 
@@ -172,7 +171,8 @@ def guess_file(path: Path) -> str:
     path = Path(path)
     if path.is_dir():
         return SOURCE
-    if path.suffix.lower() == ".zip" and zipfile.is_zipfile(path):
+    from . import archives
+    if archives.kind(path):
         return guess_archive(path)
     try:
         size = path.stat().st_size
@@ -199,28 +199,28 @@ def incidental(name: str) -> bool:
 
 # ----------------------------------------------------------------------------------------------- archives
 def archive_members(path: Path) -> list[tuple[str, str]]:
-    """(member name, guessed category) for each file in a zip."""
+    """(member name, guessed category) for each file in an archive (.zip, .tar.gz...)."""
+    from . import archives
     out, looked = [], 0
-    with zipfile.ZipFile(path) as z:
-        for info in z.infolist():
-            if info.is_dir() or Path(info.filename).name.startswith("."):
-                continue
-            name = info.filename
-            try:
-                with z.open(info) as f:
-                    head = f.read(8192)
-            except Exception:
-                out.append((name, OTHER))
+    with archives.members(path) as ms:
+        for m in ms:
+            name = m.name
+            if Path(name).name.startswith("."):
                 continue
             ext = Path(name).suffix.lower()
             needs_look = ext in _image_exts() or ext not in (rom_exts() | disk_exts())
             look = needs_look and looked < ARCHIVE_LOOKS
             looked += int(look)
             limit = PICTURE_LIMIT if ext in _image_exts() else SNIFF_LIMIT
-
-            def data(info=info, limit=limit):
-                return z.read(info) if info.file_size <= limit else None
-            out.append((name, OTHER if ext == ".zip" else guess_member(name, info.file_size, head, data, look)))
+            try:
+                with m.open() as f:          # read it now: a tarball is read front to back
+                    head = f.read(8192)
+                    whole = head + f.read() if look and m.size <= limit else None
+            except Exception:
+                out.append((name, OTHER))
+                continue
+            out.append((name, OTHER if archives.kind_by_name(name) else
+                        guess_member(name, m.size, head, lambda whole=whole: whole, look)))
     return out
 
 
@@ -238,9 +238,10 @@ def summarise(cats: list[tuple[str, str]]) -> str:
 
 
 def guess_archive(path: Path) -> str:
+    from .archives import READ_ERRORS
     try:
         return summarise(archive_members(path))
-    except (zipfile.BadZipFile, OSError):
+    except READ_ERRORS:
         return OTHER
 
 
@@ -249,27 +250,29 @@ SHORT = {MANUALS: "document", PROGRAMMING: "reference", SCHEMATICS: "drawing", P
          SOURCE: "source file", ROMS: "ROM", DISKS: "disk/tape image", OTHER: "other file"}
 
 
-def describe_archive(cats: list[tuple[str, str]]) -> str:
-    """'ZIP: 1 disk/tape image' / 'ZIP: 12 files - 8 source files, 3 photos, 1 other file'."""
+def describe_archive(cats: list[tuple[str, str]], label: str = "ZIP") -> str:
+    """'ZIP: 1 disk/tape image' / 'TAR: 12 files - 8 source files, 3 photos, 1 other file'."""
     if not cats:
-        return "ZIP (empty)"
+        return f"{label} (empty)"
     counts: dict[str, int] = {}
     for _, c in cats:
         counts[c] = counts.get(c, 0) + 1
     parts = [f"{n} {SHORT.get(c, c)}{'s' if n > 1 else ''}" for c, n in sorted(counts.items(), key=lambda kv: -kv[1])]
-    head = f"ZIP: {len(cats)} files - " if len(parts) > 1 else "ZIP: "
+    head = f"{label}: {len(cats)} files - " if len(parts) > 1 else f"{label}: "
     return head + ", ".join(parts[:4]) + (", …" if len(parts) > 4 else "")
 
 
 def inspect_file(path: Path) -> tuple[str, str]:
     """(guessed category, short type description) for one row of the Add files dialog."""
+    from . import archives
     path = Path(path)
-    if path.suffix.lower() == ".zip" and zipfile.is_zipfile(path):
+    k = archives.kind(path)
+    if k:
         try:
             cats = archive_members(path)
-        except (zipfile.BadZipFile, OSError):
-            return OTHER, "ZIP (can't be read)"
-        return summarise(cats), describe_archive(cats)
+        except archives.READ_ERRORS:
+            return OTHER, f"{archives.label(k)} (can't be read)"
+        return summarise(cats), describe_archive(cats, archives.label(k))
     return guess_file(path), describe_file(path)
 
 

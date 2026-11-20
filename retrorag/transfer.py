@@ -11,14 +11,12 @@ token needed). Upload pages close after UPLOAD_HOURS, and areas are deleted afte
 """
 from __future__ import annotations
 
-import io
 import json
 import re
 import secrets
 import shutil
 import socket
 import time
-import zipfile
 from pathlib import Path
 
 from .library import Library
@@ -127,8 +125,10 @@ def save_file(lib: Library, tid: str, name: str, data: bytes) -> list[str]:
     if len(data) > MAX_FILE:
         raise TransferError(f"{name} is too big ({len(data) >> 20} MB, limit {MAX_FILE >> 20} MB)")
     rel = _safe_rel(name.replace("\\", "/").split("/")[-1])
-    if rel.lower().endswith(".zip") and zipfile.is_zipfile(io.BytesIO(data)):
-        return _unzip(lib, p, rel[:-4] or "zip", data)
+    from . import archives
+    k = archives.kind_of_bytes(rel, data)
+    if k:
+        return _unpack(lib, p, archives.stem(rel) or k, data, k)
     target = p / rel
     n = 2
     while target.exists():
@@ -138,26 +138,15 @@ def save_file(lib: Library, tid: str, name: str, data: bytes) -> list[str]:
     return [ref_of(lib, target)]
 
 
-def _unzip(lib: Library, p: Path, folder: str, data: bytes) -> list[str]:
-    out, total = [], 0
-    base = p / folder
-    with zipfile.ZipFile(io.BytesIO(data)) as zf:
-        members = [m for m in zf.infolist() if not m.is_dir()]
-        if len(members) > MAX_MEMBERS:
-            raise TransferError(f"The zip has too many files ({len(members)})")
-        for m in members:
-            total += m.file_size
-            if total > MAX_UNZIPPED:
-                raise TransferError("The zip unpacks to more than 256 MB")
-            if m.filename.startswith("__MACOSX/"):
-                continue
-            target = (base / _safe_rel(m.filename)).resolve()
-            if p.resolve() not in target.parents:
-                continue
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(zf.read(m))
-            out.append(ref_of(lib, target))
-    return out
+def _unpack(lib: Library, p: Path, folder: str, data: bytes, k: str) -> list[str]:
+    """An uploaded .zip or tarball: its files go in a folder named after it."""
+    from . import archives
+    try:
+        files = archives.extract(data, p / _safe_rel(folder), k=k, max_files=MAX_MEMBERS, max_bytes=MAX_UNZIPPED,
+                                 skip=lambda n: n.startswith("__MACOSX/"), log=lambda m: None, strip_top=folder)
+    except ValueError as e:
+        raise TransferError(f"The {archives.label(k).lower()} archive is too big: {e}")
+    return [ref_of(lib, f) for f in files]
 
 
 def save_output(lib: Library, tid: str, name: str, data: bytes) -> Path:

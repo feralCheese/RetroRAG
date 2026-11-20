@@ -113,14 +113,17 @@ def ocr_job(library: str, doc_ids: list[int], pages: list[int] | None = None, fo
 
 
 def add_files_job(library: str, system_id: int, category: str | None, paths: list[str], copy: bool = True,
-                  categories: dict[str, str] | None = None, progress=None, log=print, cancel=None) -> list[int]:
-    """category: for every file (None: guess each); categories: {path: category} for each file."""
+                  categories: dict[str, str] | None = None, archive_kinds: list[str] | None = None,
+                  progress=None, log=print, cancel=None) -> list[int]:
+    """category: for every file (None: guess each); categories: {path: category} for each file; archive_kinds:
+    the file types to take out of archives (None: all)."""
     from pathlib import Path
     from .ingest import add_files
     from .library import Library
     lib = Library(library)
     return add_files(lib, lib.system(system_id), category, [Path(p) for p in paths], copy=copy,
-                     categories=categories, progress=progress, cancel=cancel, log=log)
+                     categories=categories, archive_kinds=set(archive_kinds) if archive_kinds is not None else None,
+                     progress=progress, cancel=cancel, log=log)
 
 
 def add_folder_job(library: str, system_id: int, category: str | None, folder: str, copy: bool = True,

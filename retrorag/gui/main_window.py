@@ -483,7 +483,7 @@ class MainWindow(QMainWindow):
                  "systems too: right-click a machine - <b>Add peripheral / expansion</b>."),
             step(2, "Add files or folders", "Or drag &amp; drop onto a system or category: manuals, programming "
                  "references, schematics, pinouts, datasheets (PDF, GIF, JPG, PNG, TIFF, TXT, HTML), source "
-                 "trees, ROMs/firmware, disk &amp; tape images (D64, ADF, TAP, TZX, DSK…). Zips are unpacked."),
+                 "trees, ROMs/firmware, disk &amp; tape images (D64, ADF, TAP, TZX, DSK…). Zips and tarballs (.tar.gz…) are unpacked."),
             step(3, "Run OCR", "Words Tesseract is unsure about are written as <code>{?w0rd|42?}</code>."),
             step(4, "Proofread", "Double-click a document. <b>F3</b> selects the next flagged word - type the fix - "
                  "<b>Ctrl+Enter</b> accepts it and moves on. The scan highlights the line &amp; word you're on."),
@@ -1304,7 +1304,8 @@ read a drawing.</p>
                 lib_root = str(self.lib.root)
                 self.jobs.submit(f"Add {len(files)} file(s) to {s.name}", lambda ctx: ctx.run_process(
                     "retrorag.proc:add_files_job", library=lib_root, system_id=s.id, category=None,
-                    categories=v["categories"], paths=[str(f) for f in files], copy=v["copy"]),
+                    categories=v["categories"], paths=[str(f) for f in files], copy=v["copy"],
+                    archive_kinds=sorted(v["kinds"]) if v["kinds"] is not None else None),
                     on_done=self._after_add, verb=f"Adding {len(files)} file(s)")
         for folder in folders:
             dlg = AddDialog(self, self.lib.systems(), system, [folder], folder=True)

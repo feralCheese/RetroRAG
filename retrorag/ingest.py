@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import os
 import shutil
-import zipfile
 from pathlib import Path
 from typing import Callable, Iterable
 
@@ -27,7 +26,6 @@ CODE_NAMES = {"makefile", "cmakelists.txt", "readme", "license", "copying", "cha
               "install", "todo", "configure", "dockerfile", "kconfig"}
 PDF_EXT = {".pdf"}
 IMAGE_EXT = {".gif", ".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".webp", ".jfif", ".pbm", ".pgm", ".ppm"}
-ARCHIVE_EXT = {".zip"}
 SKIP_DIRS = {".git", ".svn", ".hg", "node_modules", "__pycache__", ".vs", ".idea", ".vscode", "_derived",
              "_transfer"}
 SKIP_EXT = {".o", ".obj", ".exe", ".dll", ".so", ".dylib", ".a", ".lib", ".pdb", ".pyc", ".class", ".DS_Store"}
@@ -95,10 +93,12 @@ def _auto(category: str | None) -> bool:
 def add_files(lib: Library, system: System, category: str | None, paths: Iterable[Path], *, copy: bool = True,
               group_path: str = "", progress: Progress | None = None, cancel: Cancel | None = None,
               kinds: set[str] | None = None, categories: dict[str, str] | None = None,
-              log: Callable[[str], None] = print) -> list[int]:
-    """Add files. category applies to all of them; None guesses each file's own (a zip: its contents').
-    categories: per-file overrides, {str(path): category}. For a zip, BY_TYPE files each of its files under its
-    own type's category."""
+              archive_kinds: set[str] | None = None, log: Callable[[str], None] = print) -> list[int]:
+    """Add files. category applies to all of them; None guesses each file's own (an archive: its contents').
+    categories: per-file overrides, {str(path): category}. Archives (.zip, .tar.gz...) are unpacked; for one,
+    BY_TYPE files each of its files under its own type's category. kinds: the file types to add (None = all);
+    archive_kinds: the types to take out of archives (None = kinds)."""
+    from . import archives
     from .categorize import guess_file
     paths = [Path(p) for p in paths]
     added: list[int] = []
@@ -110,10 +110,11 @@ def add_files(lib: Library, system: System, category: str | None, paths: Iterabl
             progress(i, len(paths), src.name)
         try:
             cat = (categories or {}).get(str(src), category)
-            if src.suffix.lower() in ARCHIVE_EXT and lib.settings.extract_archives and zipfile.is_zipfile(src):
+            if lib.settings.extract_archives and archives.kind(src):
                 if cat is None:
                     cat = guess_file(src)
-                added += _add_archive(lib, system, cat, src, group_path, kinds, log, cancel)
+                added += _add_archive(lib, system, cat, src, group_path,
+                                      archive_kinds if archive_kinds is not None else kinds, log, cancel)
                 continue
             if _auto(cat):
                 cat = guess_file(src)
@@ -351,42 +352,20 @@ def consolidate_linked(lib: Library, log: Callable[[str], None] = print) -> int:
     return n
 
 
-def _extract_zip(src: Path, out_dir: Path, log) -> None:
-    root = out_dir.resolve()
-    with zipfile.ZipFile(src) as z:
-        for info in z.infolist():
-            if info.is_dir():
-                continue
-            target = (out_dir / info.filename).resolve()
-            if root not in target.parents:          # zip-slip guard
-                log(f"Skipped unsafe archive member {info.filename}")
-                continue
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with z.open(info) as fsrc, open(target, "wb") as fdst:
-                shutil.copyfileobj(fsrc, fdst)
-
-
 def _add_archive(lib, system, category, src, group_path, kinds, log, cancel) -> list[int]:
-    group = safe_filename(src.stem)
+    """Unpack outside the library, then copy in the files that are added: systems/<system>/<category>/<archive
+    name>/... (with BY_TYPE each file goes under its own type's category). Files left out (kinds) leave nothing
+    behind."""
+    import tempfile
+    from . import archives
+    group = safe_filename(archives.stem(src.name))
     rel_group = (Path(group_path) / group).as_posix() if group_path else group
-    if _auto(category):
-        # each file under its own type's category: unpack outside the library, then copy each file to
-        # systems/<system>/<its category>/<zip name>/...
-        import tempfile
-        with tempfile.TemporaryDirectory(prefix="retrorag-zip-") as tmp:
-            out_dir = Path(tmp) / group
-            out_dir.mkdir()
-            _extract_zip(src, out_dir, log)
-            log(f"Extracted {src.name} (each file filed by its type)")
-            return add_folder(lib, system, None, out_dir, copy=True, group_root=rel_group, kinds=kinds, log=log,
-                              cancel=cancel)
-    out_dir = lib.system_dir(system) / slugify(category) / group_path / group
-    out_dir = _unique_dest(out_dir)
-    out_dir.mkdir(parents=True)
-    _extract_zip(src, out_dir, log)
-    log(f"Extracted {src.name} -> {lib.relpath(out_dir)}")
-    rel_group = (Path(group_path) / out_dir.name).as_posix() if group_path else out_dir.name
-    return add_folder(lib, system, category, out_dir, copy=True, group_root=rel_group, kinds=kinds, log=log, cancel=cancel)
+    with tempfile.TemporaryDirectory(prefix="retrorag-unpack-") as tmp:
+        out_dir = Path(tmp) / group
+        n = len(archives.extract(src, out_dir, log, strip_top=archives.stem(src.name)))
+        log(f"Unpacked {src.name}: {n} file(s)" + (" (each filed by its type)" if _auto(category) else ""))
+        return add_folder(lib, system, None if _auto(category) else category, out_dir, copy=True,
+                          group_root=rel_group, kinds=kinds, log=log, cancel=cancel)
 
 
 def iter_folder(folder: Path) -> list[Path]:

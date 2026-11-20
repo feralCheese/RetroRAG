@@ -40,7 +40,7 @@ Copied ones are already in the library and searchable. A link with status "gone"
 Disk and tape images (D64, D81, ADF, ST, MSA, IMG, SSD, DSD, ADL, TAP, TZX, MDR):
 - An image in the library is given by its doc_id; one the user has uploaded by its `upload` reference.
 - Files the user attached in the chat can NOT be passed to these tools directly. Call `get_upload_link`, give the
-  user the link (they drop the file on that page in their browser; zips are unpacked), then `list_uploads`.
+  user the link (they drop the file on that page in their browser; zips and tarballs are unpacked), then `list_uploads`.
   If you can run code that has the file, you can PUT it to the link yourself. Small files can go through
   `upload_file` (base64) instead.
 - `list_image_contents` and `read_image_file` show what's on an image (BASIC programs come back as listings).
@@ -218,7 +218,7 @@ def build_server(library: str | Path):
     @mcp.tool()
     def upload_file(filename: str, data_base64: str, upload_id: str | None = None) -> dict:
         """Send a small file (up to a few hundred KB) straight to RetroRAG as base64, instead of an upload link.
-        Zips are unpacked. Returns the `upload` reference(s) to use with the other tools."""
+        Zips and tarballs (.tar.gz...) are unpacked. Returns the `upload` reference(s) to use with the other tools."""
         import base64
         import binascii
         try:
@@ -230,7 +230,7 @@ def build_server(library: str | Path):
 
     @mcp.tool()
     def list_uploads(upload_id: str) -> dict:
-        """The files the user has sent with an upload link (zips already unpacked). Each has an `upload` reference
+        """The files the user has sent with an upload link (zips and tarballs already unpacked). Each has an `upload` reference
         for list_image_contents, read_image_file, extract_image_files, add_file_to_library and create_image;
         disk and tape images show their format."""
         try:

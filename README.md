@@ -8,7 +8,7 @@ and other AI systems (including locally hosted ones such as Unsloth Studio, Olla
 - Organise by **system** (C64, Amiga 500, ZX Spectrum, NES…) and **category**: user guides, programming reference,
   schematics, pinouts, chip datasheets, service & repair, photos, books & magazines, source code, firmware &
   ROMs, disk & tape images.
-- Add **PDF, GIF, JPG, PNG, TIFF, BMP, TXT, MD, HTML, RTF, Word (DOC/DOCX), Excel (XLS/XLSX), source code, ROMs, disk/tape images, ZIPs**, or whole folders
+- Add **PDF, GIF, JPG, PNG, TIFF, BMP, TXT, MD, HTML, RTF, Word (DOC/DOCX), Excel (XLS/XLSX), source code, ROMs, disk/tape images, archives (ZIP, .tar.gz, .tgz, .tar.bz2, .tar.xz)**, or whole folders
   (e.g. an emulator's source tree). Drag & drop onto a system or category. Each file's category is guessed
   from its type, so a manual, a photo of the card and its driver disk added together each land in the right place.
 - **The AI can look at pages and photos** (Claude, and other clients that pass pictures on): schematics, pinout
@@ -91,9 +91,12 @@ Windows 11-style light and dark themes using the Segoe Fluent icon set. *View �
      Pictures are looked at: photos (a camera or phone picture of a board or machine) go to *Photos*, scans and
      drawings to *Schematics*. *Set every file to…* puts them all in one category, and dropping files onto a
      category in the tree does the same.
-   - **Zips** are looked inside: a zip holding a disk image goes to *Disk & Tape Images*. A zip of mixed things
-     gets *By file type*: each file in it goes to its own category, in a folder named after the zip. *Add folder*
-     offers *By file type* too.
+   - **Archives** (.zip, and tarballs: .tar.gz / .tgz, .tar.bz2, .tar.xz, .tar) are unpacked and looked inside: a
+     zip holding a disk image goes to *Disk & Tape Images*, a tarball of emulator source to *Source*. An archive of
+     mixed things gets *By file type*: each file in it goes to its own category, in a folder named after the archive
+     (a tarball's own top folder, like `vice-3.9/`, isn't nested twice). For archives, *Add files* asks which file
+     types to take out; for *Source* that's text, code and PDFs, so a source release's ROMs and icons stay out.
+     *Add folder* offers *By file type* and the same file-type choice.
    - **Photos** aren't queued for OCR (a board photo gives a few chip numbers at best, and junk), but you can
      still OCR one with *Run OCR*. Describe a photo in its **Notes** ("A2091 rev 5, 2 MB fitted, J201 open"), so
      search finds it, and the AI can look at it (see [Connecting AI systems](#connecting-ai-systems)).
@@ -285,7 +288,7 @@ Disk and tape images:
 | `list_media_formats(system?)` | the formats, and which ones a system uses |
 | `get_upload_link()` | a page where you drop a file for the AI to use (see below) |
 | `upload_file(filename, data_base64)` | sends a small file directly |
-| `list_uploads(upload_id)` | what arrived (zips are unpacked) |
+| `list_uploads(upload_id)` | what arrived (zips and tarballs are unpacked) |
 | `add_file_to_library(upload, system, category?)` | adds an uploaded file to the library |
 | `list_image_contents(doc_id or upload)` | an image's directory |
 | `read_image_file(name, doc_id or upload)` | one file: BASIC as a listing, text, a hex dump, or base64 |
@@ -297,7 +300,7 @@ Disk and tape images:
 plain text, base64 bytes, an `upload` or the `doc_id` of a library document.
 
 **Files in the chat.** Chat apps (Unsloth Studio, Claude…) don't pass attached files to tools. So when you give
-the AI a disk image or a zip, it calls `get_upload_link` and gives you a link: open it in a browser on any PC that
+the AI a disk image or an archive, it calls `get_upload_link` and gives you a link: open it in a browser on any PC that
 can reach RetroRAG and drop the file there, then tell the AI it's done. An AI that can run code can send the file to
 the same link itself. Anything the AI makes for you (a new image, extracted files) comes back as a download link.
 Links work without the access token, because each one has its own long random key. Upload pages stop accepting files
