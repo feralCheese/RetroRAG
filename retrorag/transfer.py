@@ -120,13 +120,21 @@ def ref_of(lib: Library, path: Path) -> str:
 
 # ---------------------------------------------------------------- saving
 def save_file(lib: Library, tid: str, name: str, data: bytes) -> list[str]:
-    """Store one uploaded file (unpacking a zip). -> refs of what was saved."""
+    """Store one uploaded file (unpacking a zip or tarball; a .gz / .bz2 / .xz becomes what's inside it).
+    -> refs of what was saved."""
     p = area(lib, tid)
     if len(data) > MAX_FILE:
         raise TransferError(f"{name} is too big ({len(data) >> 20} MB, limit {MAX_FILE >> 20} MB)")
     rel = _safe_rel(name.replace("\\", "/").split("/")[-1])
     from . import archives
     k = archives.kind_of_bytes(rel, data)
+    if k == archives.ONE:
+        try:
+            data = archives.decompress(data, MAX_UNZIPPED)
+        except ValueError as e:
+            raise TransferError(f"{name} is too big: {e}")
+        rel = _safe_rel(archives.stem(rel))
+        k = None
     if k:
         return _unpack(lib, p, archives.stem(rel) or k, data, k)
     target = p / rel

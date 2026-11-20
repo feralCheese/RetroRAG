@@ -37,8 +37,10 @@ Progress = Callable[[int, int, str], None]
 Cancel = Callable[[], bool]
 
 
-def classify(p: Path) -> str:
+def classify(p: Path, head: bytes | None = None) -> str:
+    """'text' / 'code' / 'pdf' / 'image' / 'binary'. head: the file's first bytes, when p isn't on disk."""
     ext, name = p.suffix.lower(), p.name.lower()
+    _sniff_binary = (lambda _p: looks_binary(head)) if head is not None else _sniff_file
     if ext in PDF_EXT:
         return "pdf"
     if ext in IMAGE_EXT:
@@ -54,7 +56,7 @@ def classify(p: Path) -> str:
     return "binary" if _sniff_binary(p) else "text"
 
 
-def _sniff_binary(p: Path) -> bool:
+def _sniff_file(p: Path) -> bool:
     try:
         with open(p, "rb") as f:
             return looks_binary(f.read(8192))
@@ -64,7 +66,7 @@ def _sniff_binary(p: Path) -> bool:
 
 def pretty_title(p: Path) -> str:
     stem = p.name
-    for suf in (".gz", ".zip"):
+    for suf in (".gz", ".bz2", ".xz", ".zip"):
         if stem.lower().endswith(suf):
             stem = stem[: -len(suf)]
     stem = Path(stem).stem if Path(stem).suffix.lower() not in ("",) else stem
@@ -110,7 +112,13 @@ def add_files(lib: Library, system: System, category: str | None, paths: Iterabl
             progress(i, len(paths), src.name)
         try:
             cat = (categories or {}).get(str(src), category)
-            if lib.settings.extract_archives and archives.kind(src):
+            k = archives.kind(src) if lib.settings.extract_archives else None
+            if k == archives.ONE:                     # manual.txt.gz: add what's inside
+                doc_id = _add_compressed(lib, system, cat, src, group_path, kinds, log)
+                if doc_id:
+                    added.append(doc_id)
+                continue
+            if k:
                 if cat is None:
                     cat = guess_file(src)
                 added += _add_archive(lib, system, cat, src, group_path,
@@ -368,6 +376,22 @@ def _add_archive(lib, system, category, src, group_path, kinds, log, cancel) -> 
                           group_root=rel_group, kinds=kinds, log=log, cancel=cancel)
 
 
+def _add_compressed(lib, system, category, src, group_path, kinds, log) -> int | None:
+    """A single compressed file (manual.txt.gz, game.d64.gz): unpacked outside the library, and what's inside is
+    added under its own name (manual.txt) - always copied in, as an archive's files are."""
+    import tempfile
+    from . import archives
+    from .categorize import guess_file
+    with tempfile.TemporaryDirectory(prefix="retrorag-unpack-") as tmp:
+        files = archives.extract(src, Path(tmp), log, k=archives.ONE)
+        if not files:
+            return None
+        f = files[0]
+        log(f"Unpacked {src.name} -> {f.name}")
+        return add_file(lib, system, guess_file(f) if _auto(category) else category, f, copy=True,
+                        group_path=group_path, kinds=kinds, log=log)
+
+
 def iter_folder(folder: Path) -> list[Path]:
     files = []
     for dirpath, dirnames, filenames in os.walk(folder):
@@ -383,8 +407,11 @@ def add_folder(lib: Library, system: System, category: str | None, folder: Path,
                group_root: str | None = None, kinds: set[str] | None = None, progress: Progress | None = None,
                cancel: Cancel | None = None, log: Callable[[str], None] = print) -> list[int]:
     """Add a whole tree (e.g. an emulator's source). Folder structure is kept as each document's group_path.
-    category None (or BY_TYPE): each file under its own type's category."""
+    category None (or BY_TYPE): each file under its own type's category. Compressed files (.txt.gz, .d64.gz) are
+    unpacked; archives inside the folder (.zip, .tar.gz) are added as they are."""
+    from . import archives
     from .categorize import guess_file
+    unpack = lib.settings.extract_archives
     auto = _auto(category)
     folder = Path(folder)
     group_root = group_root if group_root is not None else safe_filename(folder.name)
@@ -403,8 +430,11 @@ def add_folder(lib: Library, system: System, category: str | None, folder: Path,
         rel_parent = f.parent.relative_to(folder).as_posix()
         gp = group_root if rel_parent == "." else f"{group_root}/{rel_parent}"
         try:
-            doc_id = add_file(lib, system, guess_file(f) if auto else category, f, copy=copy, group_path=gp,
-                              kinds=kinds, log=log)
+            if unpack and archives.kind_by_name(f.name) == archives.ONE and archives.kind(f) == archives.ONE:
+                doc_id = _add_compressed(lib, system, None if auto else category, f, gp, kinds, log)
+            else:
+                doc_id = add_file(lib, system, guess_file(f) if auto else category, f, copy=copy, group_path=gp,
+                                  kinds=kinds, log=log)
             if doc_id:
                 added.append(doc_id)
         except Exception as e:

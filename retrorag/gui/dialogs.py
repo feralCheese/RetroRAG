@@ -383,7 +383,7 @@ class SettingsDialog(QDialog):
         self.portable.setChecked(is_portable())
         self.portable.setToolTip(f"Creates/removes {app_root() / 'portable.flag'}")
         f.addRow(self.portable)
-        self.extract_zip = QCheckBox("Unpack archives (.zip, .tar.gz, .tgz, .tar.bz2, .tar.xz) when adding")
+        self.extract_zip = QCheckBox("Unpack archives and compressed files (.zip, .tar.gz, .gz…) when adding")
         self.extract_zip.setChecked(st.extract_archives)
         f.addRow(self.extract_zip)
 

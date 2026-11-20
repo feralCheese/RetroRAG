@@ -483,7 +483,7 @@ class MainWindow(QMainWindow):
                  "systems too: right-click a machine - <b>Add peripheral / expansion</b>."),
             step(2, "Add files or folders", "Or drag &amp; drop onto a system or category: manuals, programming "
                  "references, schematics, pinouts, datasheets (PDF, GIF, JPG, PNG, TIFF, TXT, HTML), source "
-                 "trees, ROMs/firmware, disk &amp; tape images (D64, ADF, TAP, TZX, DSK…). Zips and tarballs (.tar.gz…) are unpacked."),
+                 "trees, ROMs/firmware, disk &amp; tape images (D64, ADF, TAP, TZX, DSK…). Zips, tarballs and compressed files (.tar.gz, .txt.gz…) are unpacked."),
             step(3, "Run OCR", "Words Tesseract is unsure about are written as <code>{?w0rd|42?}</code>."),
             step(4, "Proofread", "Double-click a document. <b>F3</b> selects the next flagged word - type the fix - "
                  "<b>Ctrl+Enter</b> accepts it and moves on. The scan highlights the line &amp; word you're on."),

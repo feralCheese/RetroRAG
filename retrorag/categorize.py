@@ -215,7 +215,10 @@ def archive_members(path: Path) -> list[tuple[str, str]]:
             try:
                 with m.open() as f:          # read it now: a tarball is read front to back
                     head = f.read(8192)
-                    whole = head + f.read() if look and m.size <= limit else None
+                    whole = None
+                    if look and m.size <= limit:     # (a .gz / .xz doesn't say its size: stop at the limit)
+                        whole = head + f.read(limit + 1 - len(head))
+                        whole = whole if len(whole) <= limit else None
             except Exception:
                 out.append((name, OTHER))
                 continue
@@ -267,6 +270,15 @@ def inspect_file(path: Path) -> tuple[str, str]:
     from . import archives
     path = Path(path)
     k = archives.kind(path)
+    if k == archives.ONE:                       # manual.txt.gz: described by what's inside
+        try:
+            cats = archive_members(path)
+            with archives.members(path, k) as ms:
+                with next(iter(ms)).open() as f:
+                    head = f.read(8192)
+        except archives.READ_ERRORS:
+            return OTHER, f"{archives.label(k, path.name).capitalize()} file (can't be read)"
+        return cats[0][1], f"{describe_file(Path(cats[0][0]), head)}, {archives.label(k, path.name)}-compressed"
     if k:
         try:
             cats = archive_members(path)
@@ -276,8 +288,8 @@ def inspect_file(path: Path) -> tuple[str, str]:
     return guess_file(path), describe_file(path)
 
 
-def describe_file(path: Path) -> str:
-    """Short type description for the Add files dialog."""
+def describe_file(path: Path, head: bytes | None = None) -> str:
+    """Short type description for the Add files dialog. head: the file's first bytes, when path isn't on disk."""
     from . import binaries
     from .ingest import IMAGE_EXT, OFFICE_EXT
     path = Path(path)
@@ -291,5 +303,5 @@ def describe_file(path: Path) -> str:
     if ext in binaries.FORMATS:
         return binaries.FORMATS[ext]
     from . import ingest
-    kind = ingest.classify(path)
+    kind = ingest.classify(path, head)
     return {"text": "Text", "code": "Source code", "binary": "Binary file"}.get(kind, kind)

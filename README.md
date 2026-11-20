@@ -8,7 +8,7 @@ and other AI systems (including locally hosted ones such as Unsloth Studio, Olla
 - Organise by **system** (C64, Amiga 500, ZX Spectrum, NES…) and **category**: user guides, programming reference,
   schematics, pinouts, chip datasheets, service & repair, photos, books & magazines, source code, firmware &
   ROMs, disk & tape images.
-- Add **PDF, GIF, JPG, PNG, TIFF, BMP, TXT, MD, HTML, RTF, Word (DOC/DOCX), Excel (XLS/XLSX), source code, ROMs, disk/tape images, archives (ZIP, .tar.gz, .tgz, .tar.bz2, .tar.xz)**, or whole folders
+- Add **PDF, GIF, JPG, PNG, TIFF, BMP, TXT, MD, HTML, RTF, Word (DOC/DOCX), Excel (XLS/XLSX), source code, ROMs, disk/tape images, archives (ZIP, .tar.gz, .tgz, .tar.bz2, .tar.xz) and compressed files (.gz, .bz2, .xz)**, or whole folders
   (e.g. an emulator's source tree). Drag & drop onto a system or category. Each file's category is guessed
   from its type, so a manual, a photo of the card and its driver disk added together each land in the right place.
 - **The AI can look at pages and photos** (Claude, and other clients that pass pictures on): schematics, pinout
@@ -97,6 +97,10 @@ Windows 11-style light and dark themes using the Segoe Fluent icon set. *View �
      (a tarball's own top folder, like `vice-3.9/`, isn't nested twice). For archives, *Add files* asks which file
      types to take out; for *Source* that's text, code and PDFs, so a source release's ROMs and icons stay out.
      *Add folder* offers *By file type* and the same file-type choice.
+   - **Compressed files** (.gz, .bz2, .xz - how old FTP sites like FUNET kept things: `manual.txt.gz`,
+     `game.d64.gz`) become what's inside them: `manual.txt` is added as text and read, `game.d64` as a disk image.
+     That happens on their own, in a folder you add, inside a zip or tarball, and in AI uploads. (Zips and
+     tarballs *inside a folder* are added as they are.) *Settings → Unpack archives…* turns all of this off.
    - **Photos** aren't queued for OCR (a board photo gives a few chip numbers at best, and junk), but you can
      still OCR one with *Run OCR*. Describe a photo in its **Notes** ("A2091 rev 5, 2 MB fitted, J201 open"), so
      search finds it, and the AI can look at it (see [Connecting AI systems](#connecting-ai-systems)).
@@ -288,7 +292,7 @@ Disk and tape images:
 | `list_media_formats(system?)` | the formats, and which ones a system uses |
 | `get_upload_link()` | a page where you drop a file for the AI to use (see below) |
 | `upload_file(filename, data_base64)` | sends a small file directly |
-| `list_uploads(upload_id)` | what arrived (zips and tarballs are unpacked) |
+| `list_uploads(upload_id)` | what arrived (zips, tarballs and .gz files are unpacked) |
 | `add_file_to_library(upload, system, category?)` | adds an uploaded file to the library |
 | `list_image_contents(doc_id or upload)` | an image's directory |
 | `read_image_file(name, doc_id or upload)` | one file: BASIC as a listing, text, a hex dump, or base64 |
