@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 from pathlib import Path
 from typing import Callable, Iterable
@@ -495,6 +496,78 @@ def scanned_pages(pdf_path: Path, min_chars: int) -> list[int]:
     return out
 
 
+_STRAY = re.compile(r"(?<!\S)[B-HJ-Zb-z](?!\S)")        # one-letter 'words' other than a / A / I
+_WORD = re.compile(r"[A-Za-z]+")
+
+
+def _spacing(txt: str) -> tuple[float, float, float]:
+    """(share of tokens that are stray single letters, mean word length, share of words 16+ letters long)."""
+    toks, words = txt.split(), _WORD.findall(txt)
+    if not toks or not words:
+        return 0.0, 0.0, 0.0
+    return (len(_STRAY.findall(txt)) / len(toks), sum(map(len, words)) / len(words),
+            sum(len(w) >= 16 for w in words) / len(words))
+
+
+def pdf_page_text(page) -> str:
+    """A PDF page's own text layer, in reading order.
+    - A page stored rotated (a book scanned upside down and turned with /Rotate, a landscape table) is read the
+      way it's shown: sorted on the unrotated page, its lines and words come out backwards or jumbled.
+    - MuPDF adds a space wherever two letters sit apart, so letter-spaced text (Acrobat ClearScan, justified
+      lines) comes out as 'c h e m i s t'. A page full of stray letters is read again without the added spaces,
+      and that's kept when the words still stand apart (the file has its own spaces) - otherwise the first
+      reading is (it has no spaces of its own, and the words would run together)."""
+    import pymupdf
+    if page.rotation:
+        try:
+            page.remove_rotation()           # in memory only: the file is never saved
+        except Exception:
+            pass
+    txt = page.get_text("text", sort=True)
+    stray = _spacing(txt)[0]
+    if stray > 0.05 and len(txt.split()) >= 20:
+        tight = page.get_text("text", sort=True, flags=pymupdf.TEXTFLAGS_TEXT | pymupdf.TEXT_INHIBIT_SPACES)
+        t_stray, t_mean, t_long = _spacing(tight)
+        if t_stray < stray / 3 and t_mean <= 7 and t_long <= 0.03:
+            return tight
+    return txt
+
+
+def reread_text_layer(lib: Library, d: Document) -> int:
+    """Read a PDF's text-layer pages again with pdf_page_text, for text read before it handled rotated and
+    letter-spaced pages. Only pages still exactly as that first reading left them are replaced: OCR'd pages,
+    proofreading and other edits are kept. -> the number of pages replaced."""
+    import pymupdf
+    from .textutil import join_pages, split_pages
+    md, src = lib.derived_md_path(d), lib.abspath(d.path)
+    if d.kind != "pdf" or not md.exists() or not src.exists():
+        return 0
+    pages = split_pages(md.read_text("utf-8"))
+    norm = lambda s: " ".join(s.split())
+    min_chars = lib.settings.pdf_min_text_chars
+    changed = 0
+    with pymupdf.open(src) as doc:
+        for i, (n, body) in enumerate(pages):
+            if n is None or not 1 <= n <= doc.page_count:
+                continue
+            page = doc[n - 1]
+            old = page.get_text("text", sort=True)          # how text layers used to be read
+            if len(old.strip()) < min_chars or norm(body) != norm(old):
+                continue                                     # no text layer (OCR'd), or edited since
+            new = pdf_page_text(page).strip()
+            if norm(new) != norm(old):
+                pages[i] = (n, new)
+                changed += 1
+    if changed:
+        js = lib.ocr_json_path(d)
+        mtime = md.stat().st_mtime
+        md.write_text(join_pages(pages), "utf-8")
+        if js.exists():          # not an edit: keep 'edited since OCR' (ocr.has_manual_edits) as it was
+            os.utime(md, (mtime, mtime))
+        lib.update_document(d.id, text_updated=now_iso())
+    return changed
+
+
 def _extract_pdf(lib: Library, d: Document, src: Path) -> dict:
     import pymupdf
     min_chars = lib.settings.pdf_min_text_chars
@@ -502,7 +575,7 @@ def _extract_pdf(lib: Library, d: Document, src: Path) -> dict:
     with pymupdf.open(src) as doc:
         n = doc.page_count
         for i, page in enumerate(doc):
-            txt = page.get_text("text", sort=True).strip()
+            txt = pdf_page_text(page).strip()
             if len(txt) < min_chars:
                 scanned += 1
                 txt = "<!-- no text layer: needs OCR -->"

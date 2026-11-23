@@ -213,6 +213,31 @@ def _maybe_switch_to_builtin(lib: Library, log: Log) -> None:
     log("Ollama isn't running on this PC - switched this library to the built-in embedding model (no server needed).")
 
 
+PDF_TEXT_READING = 2     # 2: rotated pages read as shown, letter-spaced text closed up (ingest.pdf_page_text)
+
+
+def _reread_pdf_text(lib: Library, log: Log) -> None:
+    """PDF text layers read before PDF_TEXT_READING 2 can be backwards (pages stored rotated) or spaced out
+    ('c h e m i s t'): read those pages again, once. OCR'd and edited pages are kept (ingest.reread_text_layer)."""
+    if int(lib.get_meta("pdf_text_reading", "1") or 1) >= PDF_TEXT_READING:
+        return
+    from .ingest import reread_text_layer
+    docs = pages = 0
+    for d in lib.documents(where="kind='pdf' AND text_path IS NOT NULL AND text_path != ''"):
+        try:
+            n = reread_text_layer(lib, d)
+        except Exception as e:
+            log(f"Couldn't re-read the text of {d.title}: {e}")
+            continue
+        if n:
+            docs, pages = docs + 1, pages + n
+            log(f"Re-read {n} page(s) of {d.title} (rotated or letter-spaced text)")
+    lib.set_meta("pdf_text_reading", str(PDF_TEXT_READING))
+    if pages:
+        log(f"Re-read {pages} page(s) of {docs} PDF(s) whose text came out backwards or spaced out; "
+            "OCR'd and edited pages were kept.")
+
+
 def build_index(lib: Library, doc_ids: list[int] | None = None, *, rebuild_all: bool = False,
                 progress=None, cancel=None, log: Log = print) -> dict:
     lib.reload_settings()
@@ -222,6 +247,7 @@ def build_index(lib: Library, doc_ids: list[int] | None = None, *, rebuild_all: 
     _maybe_switch_to_builtin(lib, log)
     _convert_raw_rtf(lib, log)
     _refresh_media_cards(lib, log)
+    _reread_pdf_text(lib, log)
     sig = lib.settings.embed_signature()
     old_sig = lib.get_meta("embed_signature", "")
     c = lib.conn()

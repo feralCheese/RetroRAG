@@ -111,6 +111,11 @@ Windows 11-style light and dark themes using the Segoe Fluent icon set. *View �
    - **Moving a misfiled document:** right-click → *Move to…* (another system, another category, or both), drag it onto another system or category in the tree, or change **System** or **Category** on the Document tab and click *Save details*. The file moves on disk together with its OCR text, corrections and links.
 3. **🔤 Run OCR** on scanned PDFs and images. PDFs with a text layer are extracted directly; only pages without
    text are OCR'd, and *Force OCR* re-does every page.
+   - **A PDF's own text layer** (from the scanner's or Acrobat's OCR) is read the way the page is shown: a book
+     scanned upside down and turned in the PDF reads forwards, and letter-spaced text (Acrobat *ClearScan*) comes
+     out as `chemist`, not `c h e m i s t`. Libraries from before this are re-read once at the next index build,
+     keeping OCR'd and edited pages. If a text layer is poor in itself (wrong letters, junk), *Force OCR* replaces
+     it with Tesseract's reading.
    - **Ring-bound and comb-bound manuals:** the column of holes, rings or comb teeth down one edge of each page,
      and dark spine or scanner-lid shadows at the edge, are blanked before OCR so they don't turn into junk like
      `TT`, `Yt` or `{=`. They're recognised by shape: they start at the edge of the paper, are separated from the
