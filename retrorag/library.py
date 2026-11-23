@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS documents (
     source_url TEXT DEFAULT '',
     group_path TEXT DEFAULT '',      -- folder within a source tree (e.g. 'vice-3.8/src/vicii')
     link_id INTEGER REFERENCES links(id) ON DELETE SET NULL,   -- copied from this link (web page / site / repo)
+    text_layer TEXT,                 -- a PDF's own text, JSON: pages with text, which are scans, made by (ingest.py)
     added TEXT, text_updated TEXT, indexed TEXT,
     UNIQUE(system_id, path)
 );
@@ -217,6 +218,7 @@ class Document:
     source_url: str = ""
     group_path: str = ""
     link_id: int | None = None
+    text_layer: str | None = None
     added: str = ""
     text_updated: str | None = None
     indexed: str | None = None
@@ -311,6 +313,8 @@ class Library:
             dcols = {r["name"] for r in c.execute("PRAGMA table_info(documents)")}
             if "link_id" not in dcols:        # ... or before links
                 c.execute("ALTER TABLE documents ADD COLUMN link_id INTEGER REFERENCES links(id) ON DELETE SET NULL")
+            if "text_layer" not in dcols:     # ... or before RetroRAG noted where a PDF's text came from
+                c.execute("ALTER TABLE documents ADD COLUMN text_layer TEXT")
             c.execute("CREATE INDEX IF NOT EXISTS idx_docs_link ON documents(link_id)")
         self._rename_categories()
 

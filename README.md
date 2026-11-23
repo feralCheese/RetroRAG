@@ -114,8 +114,14 @@ Windows 11-style light and dark themes using the Segoe Fluent icon set. *View �
    - **A PDF's own text layer** (from the scanner's or Acrobat's OCR) is read the way the page is shown: a book
      scanned upside down and turned in the PDF reads forwards, and letter-spaced text (Acrobat *ClearScan*) comes
      out as `chemist`, not `c h e m i s t`. Libraries from before this are re-read once at the next index build,
-     keeping OCR'd and edited pages. If a text layer is poor in itself (wrong letters, junk), *Force OCR* replaces
-     it with Tesseract's reading.
+     keeping OCR'd and edited pages.
+   - **Scans that came with their own OCR text** (from a ScanSnap, Acrobat's Paper Capture, FineReader…): the
+     document page says so and which program made the text, and lets you choose. That text is usually close, but
+     its mistakes aren't flagged, so Proofread can't find them. **OCR with Tesseract** reads those pages again
+     (about a second a page here) and flags the words it isn't sure of; pages you've edited are left alone.
+     **Keep the PDF's text** uses it as it is (*More → OCR the pages that came with text* if you change your mind).
+     PDFs with digital text (made in Word, OpenOffice, EAGLE…) are exact and aren't offered OCR; *Details* says
+     which kind a PDF is.
    - **Ring-bound and comb-bound manuals:** the column of holes, rings or comb teeth down one edge of each page,
      and dark spine or scanner-lid shadows at the edge, are blanked before OCR so they don't turn into junk like
      `TT`, `Yt` or `{=`. They're recognised by shape: they start at the edge of the paper, are separated from the

@@ -1402,7 +1402,8 @@ read a drawing.</p>
         self.ocr_docs(ids)
 
     def ocr_docs(self, ids: list[int], force: bool = False, pages: list[int] | None = None, psm: int | None = None,
-                 on_done=None, cleanup: str | None = None):
+                 on_done=None, cleanup: str | None = None, layer: bool = False):
+        """layer: OCR the scanned pages that came with the PDF's own OCR text (edited pages are left alone)."""
         from ..ocr import has_manual_edits
         if not self._tesseract_ok():
             return
@@ -1414,7 +1415,7 @@ read a drawing.</p>
         docs = [d for d in docs if d.id not in in_use]
         if not docs:
             return
-        edited = [d for d in docs if has_manual_edits(self.lib, d) and pages is None]
+        edited = [d for d in docs if has_manual_edits(self.lib, d) and pages is None and not layer]
         if edited:
             names = "\n".join(d.title for d in edited[:10])
             r = QMessageBox.question(self, "Overwrite corrections?",
@@ -1426,22 +1427,23 @@ read a drawing.</p>
             if r == QMessageBox.Yes:
                 docs = [d for d in docs if d not in edited]
         for d in docs:
-            self._close_editor(d.id) if pages is None else None
+            self._close_editor(d.id) if pages is None or layer else None
         tess = self.app_settings.tesseract_path
         lib_root, doc_ids = str(self.lib.root), [d.id for d in docs]
 
         def job(ctx):
             # separate process: PDF rendering and image clean-up would otherwise freeze the window
             return ctx.run_process("retrorag.proc:ocr_job", library=lib_root, doc_ids=doc_ids, pages=pages,
-                                   force=force, psm=psm, cleanup=cleanup, app_tesseract=tess)
+                                   force=force, psm=psm, cleanup=cleanup, app_tesseract=tess, layer=layer)
 
         def done(res):
             self.refresh_all()
             self.schedule_index()
             if on_done:
                 on_done(res)
-        jid = self.jobs.submit(f"OCR {len(docs)} document(s)" if not pages else f"Re-OCR page {pages[0]}", job,
-                               on_done=done, doc_ids=doc_ids,
+        name = (f"OCR the scanned pages of {docs[0].title}" if layer else f"OCR {len(docs)} document(s)" if not pages
+                else f"Re-OCR page {pages[0]}")
+        jid = self.jobs.submit(name, job, on_done=done, doc_ids=doc_ids,
                                verb="Running OCR" if not pages else f"Re-running OCR on page {pages[0]}")
         cur = self.jobs.current
         self.statusBar().showMessage(f"OCR queued - it starts when '{cur.name}' finishes." if cur and cur.id != jid
@@ -1535,6 +1537,13 @@ read a drawing.</p>
             self.ocr_docs([doc_id])
         elif action == "ocr_force":
             self.ocr_docs([doc_id], force=True)
+        elif action == "ocr_layer":
+            self.ocr_docs([doc_id], layer=True)
+        elif action == "keep_layer":
+            import json
+            from ..ingest import text_layer_info
+            self.lib.update_document(doc_id, text_layer=json.dumps({**text_layer_info(d), "keep": True}))
+            self.doc_panel.refresh_current()
         elif action == "no_ocr":
             self.ocr_not_needed([doc_id])
         elif action == "reextract":

@@ -238,6 +238,24 @@ def _reread_pdf_text(lib: Library, log: Log) -> None:
             "OCR'd and edited pages were kept.")
 
 
+def _describe_text_layers(lib: Library, log: Log) -> None:
+    """Note where each PDF's own text is (for the document page), for PDFs added before RetroRAG did that."""
+    import json
+    import pymupdf
+    from .ingest import layer_summary
+    n = 0
+    for d in lib.documents(where="kind='pdf' AND text_layer IS NULL"):
+        try:
+            with pymupdf.open(lib.abspath(d.path)) as doc:
+                info = layer_summary(doc, lib.settings.pdf_min_text_chars)
+        except Exception as e:
+            info = {"error": str(e)[:200]}
+        lib.update_document(d.id, text_layer=json.dumps(info))
+        n += 1
+    if n:
+        log(f"Noted which pages of {n} PDF(s) came with their own text.")
+
+
 def build_index(lib: Library, doc_ids: list[int] | None = None, *, rebuild_all: bool = False,
                 progress=None, cancel=None, log: Log = print) -> dict:
     lib.reload_settings()
@@ -248,6 +266,7 @@ def build_index(lib: Library, doc_ids: list[int] | None = None, *, rebuild_all: 
     _convert_raw_rtf(lib, log)
     _refresh_media_cards(lib, log)
     _reread_pdf_text(lib, log)
+    _describe_text_layers(lib, log)
     sig = lib.settings.embed_signature()
     old_sig = lib.get_meta("embed_signature", "")
     c = lib.conn()

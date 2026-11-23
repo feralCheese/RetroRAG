@@ -94,8 +94,10 @@ def _child(target: str, kwargs: dict, q) -> None:
 
 # ============================================================================ job entry points (run in the child)
 def ocr_job(library: str, doc_ids: list[int], pages: list[int] | None = None, force: bool = False,
-            psm: int | None = None, cleanup: str | None = None, app_tesseract: str = "",
+            psm: int | None = None, cleanup: str | None = None, app_tesseract: str = "", layer: bool = False,
             progress=None, log=print, cancel=None) -> list[dict]:
+    """layer: OCR the scanned pages that came with the PDF's own OCR text (ingest.layer_pages_to_ocr)."""
+    from .ingest import layer_pages_to_ocr
     from .library import Library
     from .ocr import ocr_document
     lib = Library(library)
@@ -106,6 +108,19 @@ def ocr_job(library: str, doc_ids: list[int], pages: list[int] | None = None, fo
             continue
         prefix = f"[{k + 1}/{len(doc_ids)}] " if len(doc_ids) > 1 else ""
         prog = (lambda i, n, m="", p=prefix: progress(i, n, p + m)) if progress else None
+        if layer:
+            pages, edited = layer_pages_to_ocr(lib, d)
+            if edited:
+                log(f"{d.title}: left {len(edited)} page(s) you've edited as they are (pages "
+                    f"{', '.join(map(str, edited[:12]))}{'...' if len(edited) > 12 else ''}).")
+                import json
+                from .ingest import text_layer_info
+                info = text_layer_info(d)
+                info["edited"] = sorted(set(info.get("edited") or []) | set(edited))
+                lib.update_document(d.id, text_layer=json.dumps(info))
+            if not pages:
+                out.append({"doc_id": did, "pages": 0})
+                continue
         res = ocr_document(lib, d, pages=pages, force=force, psm=psm, cleanup=cleanup, progress=prog,
                            cancel=cancel, log=log, app_tesseract=app_tesseract)
         out.append({"doc_id": did, **(res or {})})

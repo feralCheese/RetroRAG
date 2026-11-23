@@ -27,10 +27,13 @@ def human_size(n: int) -> str:
 STATUS_TEXT = {"none": "no text yet", "extracted": "text extracted", "partial": "partly extracted (some pages need OCR)",
                "ocr": "OCR text (not yet proofread)", "reviewed": "proofread ✓", "info": "info card (binary file)"}
 
-PRIMARY_ACTIONS = ("ocr", "open_editor", "open_original")
-BAR_ACTIONS = PRIMARY_ACTIONS + ("no_ocr",)              # buttons; the rest are in More
-# in the order of the steps: OCR (or say it isn't needed), then proofread
-ACTIONS = [("ocr", "Run OCR", "scan"), ("no_ocr", "OCR not needed", "check"), ("open_editor", "Proofread", "edit"),
+PRIMARY_ACTIONS = ("ocr", "ocr_layer", "open_editor", "open_original")
+BAR_ACTIONS = ("ocr", "open_editor", "open_original", "no_ocr")   # buttons; the rest are in More
+CHOICE_ACTIONS = ("ocr_layer", "keep_layer")       # under the note that asks: OCR a PDF's own text, or keep it
+# in the order of the steps: OCR (or say it isn't needed, or keep the PDF's own text), then proofread
+ACTIONS = [("ocr", "Run OCR", "scan"), ("ocr_layer", "OCR with Tesseract", "scan"),
+           ("keep_layer", "Keep the PDF's text", "check"), ("no_ocr", "OCR not needed", "check"),
+           ("open_editor", "Proofread", "edit"),
            ("ocr_force", "Force OCR (all pages)", "refresh"), ("reextract", "Re-extract text", "text"),
            ("index", "Index now", "sync"), ("open_original", "Original", "view"),
            ("show_folder", "Show in folder", "open_folder"), ("remove", "Remove…", "delete")]
@@ -80,6 +83,12 @@ class DocPanel(QWidget):
         self.callout.setTextFormat(Qt.RichText)
         self.callout.hide()
         v.addWidget(self.callout)
+        self.choice_row = QWidget()                  # the answers to the note's question, right under it
+        choice_l = QHBoxLayout(self.choice_row)
+        choice_l.setContentsMargins(0, 2, 0, 2)
+        choice_l.setSpacing(6)
+        self.choice_row.hide()
+        v.addWidget(self.choice_row)
         self.busy_map: dict = {}          # {doc id: what a job is doing to it}, maintained by the main window
         self.busy_ids: set = set()
 
@@ -115,22 +124,31 @@ class DocPanel(QWidget):
         self._more_actions: dict = {}
         for key, label, ic in ACTIONS:
             self._button_icons[key] = ic
-            if key in BAR_ACTIONS:
+            if key in BAR_ACTIONS or key in CHOICE_ACTIONS:
                 b = QPushButton(label)
                 b.clicked.connect(lambda _=False, k=key: self.doc and self.action.emit(k, self.doc.id))
-                bar.addWidget(b)
+                (choice_l if key in CHOICE_ACTIONS else bar).addWidget(b)
                 self.buttons[key] = b
+        choice_l.addStretch()
         more = QPushButton("More")
         menu = QMenu(more)
         self.buttons["no_ocr"].setToolTip("Nothing worth reading in it (a photo of a board, a logo...): take it off "
                                           "the list of documents that need OCR. Run OCR still works on it later.")
+        self.buttons["ocr_layer"].setToolTip("Read the scanned pages again with Tesseract, which flags the words it "
+                                             "isn't sure of for you to check. Pages you've edited are left alone.")
+        self.buttons["keep_layer"].setToolTip("Use the text that came with the PDF as it is. You can still OCR "
+                                              "those pages later: More > OCR the pages that came with text.")
         for key, label, ic in ACTIONS:
-            if key not in BAR_ACTIONS:
+            if key not in BAR_ACTIONS and key not in CHOICE_ACTIONS:
                 if key == "remove":
                     menu.addSeparator()
                 a = menu.addAction(label)
                 a.triggered.connect(lambda _=False, k=key: self.doc and self.action.emit(k, self.doc.id))
                 self.buttons[key] = a
+                if key == "ocr_force":       # after 'Keep the PDF's text', the way to change your mind
+                    self.layer_menu = menu.addAction("OCR the pages that came with text")
+                    self.layer_menu.triggered.connect(
+                        lambda _=False: self.doc and self.action.emit("ocr_layer", self.doc.id))
         more.setMenu(menu)
         self.more_btn = more
         bar.addWidget(more)
@@ -293,6 +311,7 @@ class DocPanel(QWidget):
             self.rel_list.clear()
             self.system_box.setCurrentIndex(-1)
             self.callout.hide()
+            self.choice_row.hide()
             self.busy.clear()
             self.image_box.show_doc(None)
             self.preview.show_doc(None)
@@ -348,6 +367,16 @@ class DocPanel(QWidget):
                           "Open the text editor (scan on the left, text on the right).")
         b_ocr.setText("Run OCR" if (d.needs_ocr or no_text) else "Re-run OCR")
         b_ocr.setEnabled(scan and not busy)
+        from ..ingest import text_layer_state
+        layer = text_layer_state(self.lib, d) if d.kind == "pdf" else {}
+        pending = layer.get("pending") or []
+        choose = bool(pending) and not layer.get("keep") and not (d.needs_ocr or no_text)
+        b_ocr.setVisible(not choose)
+        for k in CHOICE_ACTIONS:
+            self.buttons[k].setEnabled(not busy)
+        self.choice_row.setVisible(choose and not busy)
+        self.layer_menu.setVisible(bool(pending))
+        self.layer_menu.setEnabled(not busy)
         self.buttons["no_ocr"].setVisible(scan and bool(d.needs_ocr))
         self.buttons["no_ocr"].setEnabled(not busy)
         self.buttons["ocr_force"].setEnabled(scan and not busy)
@@ -375,6 +404,20 @@ class DocPanel(QWidget):
                                             "Some pages are scans without a text layer. ") +
                    "OCR reads the pages and flags any words it isn't sure about; you check those in step 2 "
                    "(Proofread).")
+            if pending and not layer.get("keep"):
+                msg += (f" The {len(pending)} scanned page(s) that came with their own text are left as they are "
+                        "for now: you choose what to do with those next.")
+        elif choose:
+            self._set_primary("ocr_layer")
+            by = html.escape(layer.get("by") or "")
+            msg = ("<b>This PDF came with its own text.</b> "
+                   + (f"{len(pending)} of its {d.pages} pages are scans" if len(pending) < (d.pages or 0) else
+                      f"Its {len(pending)} pages are scans")
+                   + " that already carry text from " + (f"the OCR in <i>{by}</i>" if by else "the scanner's OCR")
+                   + ", and RetroRAG is using that. It's usually close, but its mistakes aren't flagged, so "
+                   "Proofread can't point you to them.<br><b>OCR with Tesseract</b> reads those pages again (about "
+                   "a second a page) and flags the words it isn't sure of for you to check. <b>Keep the PDF's "
+                   "text</b> uses it as it is.")
         elif scan and d.flagged:
             self._set_primary("open_editor")
             msg = (step(2, 2, "Proofread") + f"OCR flagged {d.flagged} word(s) it wasn't sure about. Click "
@@ -424,6 +467,8 @@ class DocPanel(QWidget):
                 ("Location", html.escape(str(p.parent))), ("Type", f"{d.kind} ({d.ext or 'no extension'})"),
                 ("Size", human_size(d.size)), ("Pages", str(d.pages or "–")),
                 ("Text", STATUS_TEXT.get(d.text_status, d.text_status)), ("Needs OCR", "yes" if d.needs_ocr else "no")]
+        if d.kind == "pdf" and d.text_layer:
+            rows.append(("PDF's own text", self._layer_text(d)))
         if d.ocr_mean_conf is not None:
             rows.append(("OCR confidence", f"{d.ocr_mean_conf:.1f}% mean"))
         rows.append(("Flagged words", str(d.flagged)))
@@ -433,6 +478,29 @@ class DocPanel(QWidget):
         self.info.setHtml(f"<table cellspacing=3 style='color:{t['text']}'>" + "".join(
             f"<tr><td style='color:{t['muted']};padding-right:10px'>{k}</td><td>{v}</td></tr>" for k, v in rows)
             + "</table>")
+
+    def _layer_text(self, d: Document) -> str:
+        """The Details row on where a PDF's text came from."""
+        from ..ingest import text_layer_state
+        st = text_layer_state(self.lib, d)
+        if "error" in st:
+            return "couldn't tell"
+        own, scans, n = st.get("text", 0), len(st.get("scans") or []), d.pages or 0
+        by = html.escape(st.get("by") or "")
+        if not own:
+            return "none: every page needs OCR" if n else "none"
+        of = lambda k: f"all {k} pages" if k == n else f"{k} of {n} pages"
+        parts = []
+        if scans:
+            parts.append(f"{of(scans)} are scans carrying OCR text" + (f" from <i>{by}</i>" if by else ""))
+            if st.get("redone"):
+                parts.append(f"{st['redone']} of them read again by Tesseract")
+            if st.get("pending") and st.get("keep"):
+                parts.append("the rest kept as they are (your choice)")
+        if own - scans:
+            parts.append(f"{of(own - scans)} have digital text" + (f" (<i>{by}</i>)" if by and not scans else "")
+                         + ": exact, no OCR needed")
+        return "; ".join(parts)
 
     def save(self):
         if not self.doc:

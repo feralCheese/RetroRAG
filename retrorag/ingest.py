@@ -533,6 +533,87 @@ def pdf_page_text(page) -> str:
     return txt
 
 
+OCR_MAKERS = ("scan", "capture", "ocr", "finereader", "abbyy", "omnipage", "readiris", "tesseract", "clearscan")
+
+
+def _is_scan(page) -> bool:
+    """A page that is a picture of paper: an image (or tiles of one) covering most of it."""
+    area = abs(page.rect) or 1.0
+    covered = 0.0
+    try:
+        for img in page.get_images(full=True):
+            for r in page.get_image_rects(img[0]):
+                covered += min(abs(r), area)
+    except Exception:
+        return False
+    return covered > 0.6 * area
+
+
+def _made_by(meta: dict, scans: bool) -> str:
+    """The program that made a PDF's text: for scans, the one that did the OCR (ScanSnap, Acrobat Paper Capture,
+    FineReader...) when the PDF says so."""
+    names = [s.strip() for s in (meta.get("creator") or "", meta.get("producer") or "") if s and s.strip()]
+    if scans:
+        names = [s for s in names if any(k in s.lower() for k in OCR_MAKERS)] or names
+    return names[0][:80] if names else ""
+
+
+def layer_summary(doc, min_chars: int) -> dict:
+    """Where an open PDF's own text is: {"text": pages with text, "scans": [pages that are scans carrying
+    text - OCR'd by whatever made the PDF], "by": that program}."""
+    text, scans = 0, []
+    for i, page in enumerate(doc):
+        if len(page.get_text("text").strip()) >= min_chars:
+            text += 1
+            if _is_scan(page):
+                scans.append(i + 1)
+    return {"text": text, "scans": scans, "by": _made_by(doc.metadata or {}, bool(scans))}
+
+
+def text_layer_info(d: Document) -> dict:
+    import json
+    try:
+        v = json.loads(d.text_layer or "{}")
+        return v if isinstance(v, dict) else {}
+    except ValueError:
+        return {}
+
+
+def text_layer_state(lib: Library, d: Document) -> dict:
+    """A PDF's own text for the document page: its info, plus "pending": the scanned pages still using the
+    PDF's own OCR text (not read again by Tesseract since, nor edited by hand - "edited")."""
+    info = text_layer_info(d)
+    scans = info.get("scans") or []
+    done: set[int] = set()
+    if scans:
+        from .ocr import load_ocr_json
+        done = {int(k) for k in load_ocr_json(lib, d).get("pages", {}) if str(k).isdigit()}
+    skip = done | set(info.get("edited") or [])
+    return {**info, "pending": [p for p in scans if p not in skip], "redone": len([p for p in scans if p in done])}
+
+
+def layer_pages_to_ocr(lib: Library, d: Document) -> tuple[list[int], list[int]]:
+    """The scanned pages still using the PDF's own OCR text, for Tesseract to read: -> (pages, edited pages left
+    alone because their text was changed in the editor)."""
+    import pymupdf
+    from .textutil import split_pages
+    pending = text_layer_state(lib, d)["pending"]
+    md, src = lib.derived_md_path(d), lib.abspath(d.path)
+    bodies = {n: b for n, b in split_pages(md.read_text("utf-8")) if n is not None} if md.exists() else {}
+    norm = lambda s: " ".join(s.split())
+    pages, edited = [], []
+    with pymupdf.open(src) as doc:
+        for p in pending:
+            if p in bodies and 1 <= p <= doc.page_count:
+                page = doc[p - 1]
+                old = norm(page.get_text("text", sort=True))      # read before or after the reading was fixed
+                if norm(bodies[p]) not in (old, norm(pdf_page_text(page))):
+                    edited.append(p)
+                    continue
+            pages.append(p)
+    return pages, edited
+
+
 def reread_text_layer(lib: Library, d: Document) -> int:
     """Read a PDF's text-layer pages again with pdf_page_text, for text read before it handled rotated and
     letter-spaced pages. Only pages still exactly as that first reading left them are replaced: OCR'd pages,
@@ -569,21 +650,29 @@ def reread_text_layer(lib: Library, d: Document) -> int:
 
 
 def _extract_pdf(lib: Library, d: Document, src: Path) -> dict:
+    import json
     import pymupdf
     min_chars = lib.settings.pdf_min_text_chars
-    parts, scanned = [], 0
+    parts, scanned, own, scans = [], 0, 0, []
     with pymupdf.open(src) as doc:
         n = doc.page_count
         for i, page in enumerate(doc):
+            is_scan = _is_scan(page)
             txt = pdf_page_text(page).strip()
             if len(txt) < min_chars:
                 scanned += 1
                 txt = "<!-- no text layer: needs OCR -->"
+            else:
+                own += 1
+                if is_scan:
+                    scans.append(i + 1)
             parts.append(f"{page_marker(i + 1)}\n{txt}\n")
+        layer = {"text": own, "scans": scans, "by": _made_by(doc.metadata or {}, bool(scans))}
     md = lib.derived_md_path(d)
     md.write_text(f"# {d.title}\n\n" + "\n".join(parts), "utf-8")
     status = "extracted" if scanned == 0 else ("partial" if scanned < n else "none")
-    return {"text_path": lib.relpath(md), "text_status": status, "needs_ocr": int(scanned > 0), "pages": n}
+    return {"text_path": lib.relpath(md), "text_status": status, "needs_ocr": int(scanned > 0), "pages": n,
+            "text_layer": json.dumps(layer)}
 
 
 def refresh_info_cards(lib: Library, d: Document) -> None:
