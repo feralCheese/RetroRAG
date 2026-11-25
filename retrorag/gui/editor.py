@@ -11,7 +11,7 @@ import re
 from PySide6.QtCore import QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import (QAction, QBrush, QColor, QFont, QImage, QKeySequence, QPainter, QPainterPath, QPen, QPixmap,
                            QSyntaxHighlighter, QTextCharFormat, QTextCursor, QTextDocument)
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QMenu, QToolButton, QGraphicsPixmapItem, QGraphicsRectItem, QGraphicsScene,
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QFrame, QMenu, QToolButton, QGraphicsPixmapItem, QGraphicsRectItem, QGraphicsScene,
                                QGraphicsView, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPlainTextEdit,
                                QPushButton, QSpinBox, QSplitter, QToolBar, QVBoxLayout, QWidget)
 
@@ -19,7 +19,7 @@ from ..library import Document, Library, now_iso
 from . import theme
 from ..align import align, page_tokens, token_at
 from ..ocr import is_graphic_word, load_ocr_json, reference_height, render_page
-from ..textutil import COMMENT_LINE_RE, MARKER_RE, PAGE_RE, count_markers, strip_markers
+from ..textutil import COMMENT_LINE_RE, MARKER_RE, PAGE_RE, count_markers, pages_needing_ocr, strip_markers
 
 PSM_SHORT = {3: "Layout: auto", 4: "Single column", 6: "Uniform block", 11: "Sparse text", 12: "Sparse + rotate",
              1: "Auto + rotate"}
@@ -284,6 +284,7 @@ class FindBar(QWidget):
 class ProofEditor(QWidget):
     saved = Signal(int)                  # doc id
     request_reocr = Signal(int, int, int, str)  # doc id, page, psm, cleanup
+    request_ocr_rest = Signal(int)              # doc id: OCR the pages not read yet
     dirty_changed = Signal(bool)
     cancel_job = Signal()
 
@@ -313,6 +314,20 @@ class ProofEditor(QWidget):
         self.busy = BusyBanner()
         self.busy.cancel.connect(self.cancel_job.emit)
         lay.addWidget(self.busy)
+        # a PDF whose pages weren't all OCR'd: say so, and offer to read the rest (Re-OCR only does one page)
+        self.rest = QFrame()
+        self.rest.setObjectName("restBanner")
+        rh = QHBoxLayout(self.rest)
+        rh.setContentsMargins(10, 6, 6, 6)
+        self.rest_label = QLabel()
+        self.rest_label.setWordWrap(True)
+        self.rest_btn = QPushButton()
+        self.rest_btn.setObjectName("primary")
+        self.rest_btn.clicked.connect(lambda: self.request_ocr_rest.emit(self.doc.id))
+        rh.addWidget(self.rest_label, 1)
+        rh.addWidget(self.rest_btn)
+        self.rest.hide()
+        lay.addWidget(self.rest)
         self._icons: list = []
         # scan tools live in their own toolbar above the page image
         stb = QToolBar()
@@ -507,6 +522,17 @@ class ProofEditor(QWidget):
         self._loading = False
         self._update_count()
 
+    def _update_rest(self):
+        left = pages_needing_ocr(self.text.toPlainText()) if self.doc.kind == "pdf" else []
+        if left:
+            n, total = len(left), self.doc.pages or len(left)
+            self.rest_label.setText(
+                (f"<b>{n} of the {total} pages haven't been OCR'd yet</b>" if n < total else
+                 "<b>No page has been OCR'd yet</b>") + " - they have no text. <b>Re-OCR</b> only reads the "
+                "page you're on; this reads the rest and leaves the pages you've checked alone.")
+            self.rest_btn.setText(f"OCR the {n} page{'s' if n > 1 else ''}")
+        self.rest.setVisible(bool(left))
+
     def is_dirty(self) -> bool:
         return self.editable and self.text.document().isModified()
 
@@ -529,9 +555,11 @@ class ProofEditor(QWidget):
         if text:
             self.busy.show_busy(text)
             self.text.setReadOnly(True)
+            self.rest_btn.setEnabled(False)
         else:
             self.busy.clear()
             self.text.setReadOnly(not self.editable)
+            self.rest_btn.setEnabled(True)
 
     # ------------------------------------------------------------------ OCR noise
     def delete_garbage_lines(self):
@@ -562,6 +590,7 @@ class ProofEditor(QWidget):
         status = {"reviewed": "reviewed ✓", "ocr": "OCR (unreviewed)"}.get(self.doc.text_status, self.doc.text_status)
         ro = "" if self.editable else "  ·  read-only (original file)"
         self.flag_label.setText(f"   {n} flagged  ·  {status}{ro}")
+        self._update_rest()
 
     # ------------------------------------------------------------------ flags
     def _find_marker(self, forward: bool = True):

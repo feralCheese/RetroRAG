@@ -9,7 +9,7 @@ from typing import Callable, Iterable
 
 from . import binaries
 from .library import Document, Library, System, now_iso, safe_filename, slugify
-from .textutil import html_to_text, looks_binary, page_marker, read_text_file, rtf_to_markdown
+from .textutil import NEEDS_OCR, html_to_text, looks_binary, page_marker, read_text_file, rtf_to_markdown
 
 TEXT_EXT = {".txt", ".md", ".markdown", ".rst", ".asc", ".ascii", ".nfo", ".diz", ".doc.txt", ".csv", ".tsv",
             ".json", ".xml", ".ini", ".cfg", ".conf", ".yaml", ".yml", ".tex", ".1st", ".me", ".readme", ".faq"}
@@ -661,7 +661,7 @@ def _extract_pdf(lib: Library, d: Document, src: Path) -> dict:
             txt = pdf_page_text(page).strip()
             if len(txt) < min_chars:
                 scanned += 1
-                txt = "<!-- no text layer: needs OCR -->"
+                txt = NEEDS_OCR
             else:
                 own += 1
                 if is_scan:

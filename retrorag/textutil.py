@@ -30,6 +30,14 @@ def page_marker(n: int) -> str:
     return f"<!-- page {n} -->"
 
 
+NEEDS_OCR = "<!-- no text layer: needs OCR -->"     # a PDF page with no text of its own, not OCR'd yet
+
+
+def pages_needing_ocr(text: str) -> list[int]:
+    """Pages of a PDF's text that are still waiting for OCR."""
+    return [n for n, body in split_pages(text) if n is not None and "<!-- no text layer" in body]
+
+
 def split_pages(text: str) -> list[tuple[int | None, str]]:
     """Split text on <!-- page N --> markers -> [(page, body)]. Text before the first marker gets page None."""
     out: list[tuple[int | None, str]] = []

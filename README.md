@@ -110,7 +110,9 @@ Windows 11-style light and dark themes using the Segoe Fluent icon set. *View �
    - **Peripherals and expansions:** see [Peripherals, notes and links](#peripherals-notes-and-links).
    - **Moving a misfiled document:** right-click → *Move to…* (another system, another category, or both), drag it onto another system or category in the tree, or change **System** or **Category** on the Document tab and click *Save details*. The file moves on disk together with its OCR text, corrections and links.
 3. **🔤 Run OCR** on scanned PDFs and images. PDFs with a text layer are extracted directly; only pages without
-   text are OCR'd, and *Force OCR* re-does every page.
+   text are OCR'd, and *Force OCR* re-does every page. If some pages have been OCR'd already (say with *Re-OCR
+   page* in the editor), *Run OCR* reads just the pages still waiting and leaves the others, and any corrections,
+   alone. The editor says when pages are waiting and has a button to OCR them.
    - **A PDF's own text layer** (from the scanner's or Acrobat's OCR) is read the way the page is shown: a book
      scanned upside down and turned in the PDF reads forwards, and letter-spaced text (Acrobat *ClearScan*) comes
      out as `chemist`, not `c h e m i s t`. Libraries from before this are re-read once at the next index build,
@@ -145,8 +147,8 @@ Windows 11-style light and dark themes using the Segoe Fluent icon set. *View �
    - **Flagged "words" in drawings:** in schematics, Tesseract sometimes reads part of the drawing (a chip outline, a wire, a pin box) as a short word, e.g. `{?Fs|46?}` with a box covering a whole IC. That's not text, so delete it: **Ctrl+Del** removes the flagged word at the cursor and jumps to the next one. *More → Remove drawing shapes read as words* clears a whole page. New OCR runs skip these shapes automatically (Settings → OCR → *Ignore drawing shapes…*). The rule of thumb: if it's real text, fix it and press Ctrl+Enter; if it's part of a drawing, Ctrl+Del.
    - **Diagram noise:** *More → Delete garbage lines on this page* removes lines that are mostly OCR junk from diagrams and schematics. Ctrl+Z undoes it.
    - A **●** on the editor tab means unsaved changes. *Save* (Ctrl+S) shows **✓ Saved**.
-   - **Re-OCR page** retries one page with another layout mode (*11 - Sparse text* suits schematics and pinouts)
-     or another cleanup level.
+   - **Re-OCR page** retries the page you're on with another layout mode (*11 - Sparse text* suits schematics and
+     pinouts) or another cleanup level. It reads only that page.
    - **Mark reviewed** records that the text is proofread.
    - The confidence threshold (default 70%) is in Settings → OCR.
    - **Preview pane** (Document tab, right of the form). Scans with OCR or extracted text switch between

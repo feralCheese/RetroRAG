@@ -400,8 +400,13 @@ class DocPanel(QWidget):
                           "<b>Run OCR</b> still works."), "done"
         elif scan and (d.needs_ocr or no_text):
             self._set_primary("ocr")
-            msg = (step(1, 2, "Run OCR") + ("This is a scan with no text yet. " if no_text else
-                                            "Some pages are scans without a text layer. ") +
+            from ..ocr import pages_left
+            left = pages_left(self.lib, d) if d.text_status == "ocr" else []      # some pages OCR'd already
+            msg = (step(1, 2, "Run OCR") + (
+                f"{len(left)} of the {d.pages} pages haven't been OCR'd yet. <b>Run OCR</b> reads just those and "
+                "leaves the pages already read (and anything you've corrected) alone. "
+                if left and len(left) < (d.pages or 0) else
+                "This is a scan with no text yet. " if no_text else "Some pages are scans without a text layer. ") +
                    "OCR reads the pages and flags any words it isn't sure about; you check those in step 2 "
                    "(Proofread).")
             if pending and not layer.get("keep"):

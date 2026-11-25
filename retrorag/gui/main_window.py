@@ -1403,8 +1403,10 @@ read a drawing.</p>
 
     def ocr_docs(self, ids: list[int], force: bool = False, pages: list[int] | None = None, psm: int | None = None,
                  on_done=None, cleanup: str | None = None, layer: bool = False):
-        """layer: OCR the scanned pages that came with the PDF's own OCR text (edited pages are left alone)."""
-        from ..ocr import has_manual_edits
+        """layer: OCR the scanned pages that came with the PDF's own OCR text (edited pages are left alone).
+        Without pages / force, a PDF with pages not OCR'd yet gets just those (ocr_document), so nothing edited is
+        overwritten: no warning, and an open editor stays open and reloads afterwards."""
+        from ..ocr import has_manual_edits, pages_left
         if not self._tesseract_ok():
             return
         docs = [d for d in (self.lib.document(i) for i in ids) if d and d.kind in ("pdf", "image")]
@@ -1415,7 +1417,9 @@ read a drawing.</p>
         docs = [d for d in docs if d.id not in in_use]
         if not docs:
             return
-        edited = [d for d in docs if has_manual_edits(self.lib, d) and pages is None and not layer]
+        fills = {d.id for d in docs if pages is None and not force and not layer and pages_left(self.lib, d)}
+        edited = [d for d in docs if has_manual_edits(self.lib, d) and pages is None and not layer
+                  and d.id not in fills]
         if edited:
             names = "\n".join(d.title for d in edited[:10])
             r = QMessageBox.question(self, "Overwrite corrections?",
@@ -1426,8 +1430,17 @@ read a drawing.</p>
                 return
             if r == QMessageBox.Yes:
                 docs = [d for d in docs if d not in edited]
+        reload = []
         for d in docs:
-            self._close_editor(d.id) if pages is None or layer else None
+            ed = self.editors.get(d.id)
+            if not ed:
+                continue
+            if (pages is not None and not layer) or d.id in fills:   # only pages nobody has worked on are read
+                if ed.is_dirty():
+                    ed.save()
+                reload.append(d.id)
+            else:
+                self._close_editor(d.id)
         tess = self.app_settings.tesseract_path
         lib_root, doc_ids = str(self.lib.root), [d.id for d in docs]
 
@@ -1437,14 +1450,23 @@ read a drawing.</p>
                                    force=force, psm=psm, cleanup=cleanup, app_tesseract=tess, layer=layer)
 
         def done(res):
+            for did in reload:
+                ed = self.editors.get(did)
+                if ed:
+                    ed.reload_after_ocr()
             self.refresh_all()
             self.schedule_index()
             if on_done:
                 on_done(res)
-        name = (f"OCR the scanned pages of {docs[0].title}" if layer else f"OCR {len(docs)} document(s)" if not pages
-                else f"Re-OCR page {pages[0]}")
+        one = len(docs) == 1 and docs[0].id in fills
+        left = len(pages_left(self.lib, docs[0])) if one else 0
+        name = (f"OCR the scanned pages of {docs[0].title}" if layer else
+                f"OCR the {left} page(s) of {docs[0].title} not read yet" if one else
+                f"OCR {len(docs)} document(s)" if not pages else
+                f"Re-OCR page {pages[0]}" if len(pages) == 1 else f"OCR {len(pages)} pages of {docs[0].title}")
         jid = self.jobs.submit(name, job, on_done=done, doc_ids=doc_ids,
-                               verb="Running OCR" if not pages else f"Re-running OCR on page {pages[0]}")
+                               verb="Running OCR" if not pages or len(pages) > 1 else
+                               f"Re-running OCR on page {pages[0]}")
         cur = self.jobs.current
         self.statusBar().showMessage(f"OCR queued - it starts when '{cur.name}' finishes." if cur and cur.id != jid
                                      else "OCR started - it runs in the background; you can keep working.", 6000)
@@ -1605,6 +1627,7 @@ read a drawing.</p>
             ed.dirty_changed.connect(lambda dirty, ed=ed: self._mark_tab(ed, dirty))
             ed.cancel_job.connect(lambda did=doc_id: self.jobs.cancel_for(did))
             ed.request_reocr.connect(self._reocr_page)
+            ed.request_ocr_rest.connect(lambda did: self.ocr_docs([did]))
             self.editors[doc_id] = ed
             self.tabs.addTab(ed, (d.title[:28] + "…") if len(d.title) > 28 else d.title)
         self.tabs.setCurrentWidget(ed)
@@ -1619,8 +1642,7 @@ read a drawing.</p>
             self.tabs.setTabToolTip(i, "Unsaved changes - Ctrl+S to save" if dirty else ed.doc.title)
 
     def _reocr_page(self, doc_id: int, page: int, psm: int, cleanup: str):
-        ed = self.editors.get(doc_id)
-        self.ocr_docs([doc_id], pages=[page], psm=psm, cleanup=cleanup, on_done=lambda _r: ed and ed.reload_after_ocr())
+        self.ocr_docs([doc_id], pages=[page], psm=psm, cleanup=cleanup)      # the open editor reloads afterwards
 
     def _close_editor(self, doc_id: int, force: bool = False) -> bool:
         ed = self.editors.get(doc_id)

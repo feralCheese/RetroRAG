@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Callable
 
 from .library import Document, Library, now_iso
-from .textutil import count_markers, join_pages, make_marker, split_pages
+from .textutil import count_markers, join_pages, make_marker, pages_needing_ocr, split_pages
 
 Log = Callable[[str], None]
 
@@ -270,12 +270,42 @@ def render_page(lib: Library, d: Document, page: int, dpi: int = 150):
     return None
 
 
+def page_sha(body: str) -> str:
+    """Fingerprint of the text OCR wrote for a page (kept in the page's ocr.json entry as "sha")."""
+    import hashlib
+    return hashlib.sha1(body.strip().encode("utf-8")).hexdigest()[:16]
+
+
 def has_manual_edits(lib: Library, d: Document) -> bool:
-    """True when the OCR text was edited/reviewed since OCR ran (so re-running OCR would lose work)."""
+    """True when the OCR text was edited/reviewed since OCR ran (so re-running OCR would lose work).
+    A page OCR'd since page fingerprints were kept is edited if its text no longer matches; for OCR from before that,
+    the text file being newer than the OCR record is the sign (which re-OCRing any one page resets)."""
     if d.text_status == "reviewed":
         return True
     md, js = lib.derived_md_path(d), lib.ocr_json_path(d)
-    return md.exists() and js.exists() and md.stat().st_mtime > js.stat().st_mtime + 2
+    if not (md.exists() and js.exists()):
+        return False
+    pages = load_ocr_json(lib, d).get("pages") or {}
+    try:
+        bodies = {n: b for n, b in split_pages(md.read_text("utf-8")) if n is not None}
+    except OSError:
+        return False
+    if any("sha" in p and page_sha(bodies.get(int(k), "")) != p["sha"] for k, p in pages.items()):
+        return True
+    if pages and all("sha" in p for p in pages.values()):
+        return False
+    return md.stat().st_mtime > js.stat().st_mtime + 2
+
+
+def pages_left(lib: Library, d: Document) -> list[int]:
+    """A PDF's pages that haven't been OCR'd yet (no text of their own, and OCR hasn't read them)."""
+    if d.kind != "pdf":
+        return []
+    md = lib.derived_md_path(d)
+    try:
+        return pages_needing_ocr(md.read_text("utf-8")) if md.exists() else []
+    except OSError:
+        return []
 
 
 def load_ocr_json(lib: Library, d: Document) -> dict:
@@ -291,7 +321,8 @@ def load_ocr_json(lib: Library, d: Document) -> dict:
 def ocr_document(lib: Library, d: Document, *, pages: list[int] | None = None, force: bool = False,
                  psm: int | None = None, cleanup: str | None = None, progress=None, cancel=None, log: Log = print,
                  app_tesseract: str = "") -> dict:
-    """OCR a document. PDFs: by default only pages without a usable text layer (force=True: all pages).
+    """OCR a document. PDFs: by default the pages not OCR'd yet, so pages already read and proofread are left alone;
+    once none are left, every page without a usable text layer again (force=True: all pages).
     `pages` restricts to specific page numbers (used by the editor's 're-OCR this page')."""
     configure(lib, app_tesseract)
     st = lib.settings
@@ -305,7 +336,8 @@ def ocr_document(lib: Library, d: Document, *, pages: list[int] | None = None, f
 
     if d.kind == "pdf" and pages is None and not force:
         from .ingest import scanned_pages
-        pages = scanned_pages(lib.abspath(d.path), st.pdf_min_text_chars)
+        pages = [n for n, b in sorted(existing.items()) if "<!-- no text layer" in b] or \
+            scanned_pages(lib.abspath(d.path), st.pdf_min_text_chars)
         if not pages:
             log(f"{d.title}: every page already has a text layer (use 'Force OCR' to OCR anyway).")
             lib.update_document(d.id, needs_ocr=0)
@@ -327,6 +359,7 @@ def ocr_document(lib: Library, d: Document, *, pages: list[int] | None = None, f
         if pj.get("binding"):
             bound += 1
         existing[n] = body if body else "<!-- OCR found no text on this page -->"
+        pj["sha"] = page_sha(existing[n])
         js["pages"][str(n)] = pj
         done += 1
         # write after every page so a crash/cancel loses nothing
