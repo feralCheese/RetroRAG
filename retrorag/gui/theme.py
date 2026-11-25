@@ -56,7 +56,7 @@ GLYPHS = {
     "check": 0xE73E, "flag": 0xE7C1, "link": 0xE71B, "export": 0xEDE1, "system": 0xE7F4, "code": 0xE943,
     "image": 0xEB9F, "pdf": 0xEA90, "chip": 0xE950, "floppy": 0xE74E, "scan": 0xE8FE, "view": 0xE890,
     "info": 0xE946, "warning": 0xE7BA, "accept": 0xE8FB, "fit": 0xE9A6, "library": 0xE8F1, "server": 0xE968,
-    "filter": 0xE71C, "list": 0xEA37, "text": 0xE8D2,
+    "filter": 0xE71C, "list": 0xEA37, "text": 0xE8D2, "rotate": 0xE7AD,
 }
 _icon_font: str | None = None
 _cache: dict = {}
@@ -242,7 +242,7 @@ FREEDESKTOP = {
     "pdf": "application-pdf", "chip": "drive-harddisk", "floppy": "media-floppy", "scan": "scanner",
     "view": "document-open", "info": "dialog-information", "warning": "dialog-warning", "accept": "dialog-ok-apply",
     "fit": "zoom-fit-best", "library": "accessories-dictionary", "server": "network-server", "filter": "edit-find",
-    "list": "view-list", "text": "format-text-bold",
+    "list": "view-list", "text": "format-text-bold", "rotate": "object-rotate-right",
 }
 _STANDARD = {
     "doc": "SP_FileIcon", "folder": "SP_DirIcon", "open_folder": "SP_DirOpenIcon", "sync": "SP_BrowserReload",
@@ -269,7 +269,7 @@ def _fallback_icon(name: str) -> QIcon:
 
 
 _TEXT_ICONS = {"add": "+", "edit": "✎", "library": "≡", "server": "▤", "text": "T", "zoom_in": "+",
-               "zoom_out": "−"}
+               "zoom_out": "−", "rotate": "↻"}
 
 
 def _text_icon(ch: str) -> QIcon:

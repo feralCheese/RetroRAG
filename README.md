@@ -149,6 +149,10 @@ Windows 11-style light and dark themes using the Segoe Fluent icon set. *View �
    - A **●** on the editor tab means unsaved changes. *Save* (Ctrl+S) shows **✓ Saved**.
    - **Re-OCR page** retries the page you're on with another layout mode (*11 - Sparse text* suits schematics and
      pinouts) or another cleanup level. It reads only that page.
+   - **Rotate** (↻ by the zoom buttons) turns a sideways or upside-down page the right way up and OCRs it again.
+     The original file isn't changed: the turn is kept with the OCR text (`.ocr.json`), and the preview and the
+     AI's `view_page` show the page turned too. A page whose text is the PDF's own is only turned; *Re-OCR* reads
+     it if you want.
    - **Mark reviewed** records that the text is proofread.
    - The confidence threshold (default 70%) is in Settings → OCR.
    - **Preview pane** (Document tab, right of the form). Scans with OCR or extracted text switch between

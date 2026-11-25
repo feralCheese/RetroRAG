@@ -228,8 +228,54 @@ def ocr_best(img, upscale: bool, cleanup: str, lang: str, psm: int, threshold: i
     return body, pj
 
 
+def page_rotations(lib: Library, d: Document, js: dict | None = None) -> dict[int, int]:
+    """Pages turned the right way up in RetroRAG: {page: degrees clockwise}. Kept in the document's .ocr.json
+    (it travels with the file); the original file isn't changed."""
+    out: dict[int, int] = {}
+    for k, v in ((js if js is not None else load_ocr_json(lib, d)).get("rotate") or {}).items():
+        try:
+            k, v = int(k), int(v) % 360
+        except (TypeError, ValueError):
+            continue
+        if v in (90, 180, 270):
+            out[k] = v
+    return out
+
+
+def set_page_rotation(lib: Library, d: Document, page: int, degrees: int) -> None:
+    """Turn a page by `degrees` clockwise from how it was scanned (0: as scanned). The OCR record's file time is
+    kept, so turning a page doesn't count as OCR for 'edited since OCR' (has_manual_edits)."""
+    p = lib.ocr_json_path(d)
+    js = load_ocr_json(lib, d)
+    rot = {str(k): v for k, v in page_rotations(lib, d, js).items()}
+    degrees %= 360
+    if degrees in (90, 180, 270):
+        rot[str(page)] = degrees
+    else:
+        rot.pop(str(page), None)
+    js["rotate"] = rot
+    old = p.stat() if p.exists() else None
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(js, separators=(",", ":")), "utf-8")
+    if old:
+        os.utime(p, (old.st_atime, old.st_mtime))
+
+
+def upright(img, degrees: int):
+    """A page image turned `degrees` clockwise (multiples of 90)."""
+    from PIL import Image
+    t = {90: Image.Transpose.ROTATE_270, 180: Image.Transpose.ROTATE_180,
+         270: Image.Transpose.ROTATE_90}.get(degrees % 360)
+    return img.transpose(t) if t else img
+
+
 def page_images(lib: Library, d: Document, pages: list[int] | None, dpi: int):
-    """Yield (page_number, PIL image) for an image or PDF document."""
+    """Yield (page_number, PIL image) for an image or PDF document, each page turned the way the user set."""
+    for n, img in _page_images(lib, d, pages, dpi, page_rotations(lib, d)):
+        yield n, img
+
+
+def _page_images(lib: Library, d: Document, pages: list[int] | None, dpi: int, rot: dict[int, int]):
     from PIL import Image
     src = lib.abspath(d.path)
     if d.kind == "image":
@@ -239,7 +285,7 @@ def page_images(lib: Library, d: Document, pages: list[int] | None, dpi: int):
                 if pages and (i + 1) not in pages:
                     continue
                 im.seek(i)
-                yield i + 1, im.copy()
+                yield i + 1, upright(im.copy(), rot.get(i + 1, 0))
     elif d.kind == "pdf":
         import pymupdf
         with pymupdf.open(src) as doc:
@@ -247,26 +293,27 @@ def page_images(lib: Library, d: Document, pages: list[int] | None, dpi: int):
                 if pages and (i + 1) not in pages:
                     continue
                 pix = page.get_pixmap(dpi=dpi, colorspace=pymupdf.csGRAY, alpha=False)
-                yield i + 1, Image.frombytes("L", (pix.width, pix.height), pix.samples)
+                yield i + 1, upright(Image.frombytes("L", (pix.width, pix.height), pix.samples), rot.get(i + 1, 0))
     else:
         raise OCRError(f"OCR only applies to images and PDFs (this is {d.kind}).")
 
 
 def render_page(lib: Library, d: Document, page: int, dpi: int = 150):
-    """PIL image of a page for display (original colours)."""
+    """PIL image of a page for display (original colours), turned the way the user set."""
     from PIL import Image
     src = lib.abspath(d.path)
+    turn = page_rotations(lib, d).get(page, 0) if d.kind in ("pdf", "image") else 0
     if d.kind == "pdf":
         import pymupdf
         with pymupdf.open(src) as doc:
             if not 1 <= page <= doc.page_count:
                 return None
             pix = doc[page - 1].get_pixmap(dpi=dpi, alpha=False)
-            return Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+            return upright(Image.frombytes("RGB", (pix.width, pix.height), pix.samples), turn)
     if d.kind == "image":
         with Image.open(src) as im:
             im.seek(max(0, min(page - 1, getattr(im, "n_frames", 1) - 1)))
-            return im.convert("RGB")
+            return upright(im.convert("RGB"), turn)
     return None
 
 
@@ -346,6 +393,7 @@ def ocr_document(lib: Library, d: Document, *, pages: list[int] | None = None, f
     todo = pages or list(range(1, total + 1))
     js = load_ocr_json(lib, d)
     js.update({"engine": "tesseract", "threshold": st.low_conf_threshold, "updated": now_iso()})
+    turns = page_rotations(lib, d, js)
     done = bound = 0
     for n, img in page_images(lib, d, todo, st.ocr_dpi):
         if cancel and cancel():
@@ -360,6 +408,8 @@ def ocr_document(lib: Library, d: Document, *, pages: list[int] | None = None, f
             bound += 1
         existing[n] = body if body else "<!-- OCR found no text on this page -->"
         pj["sha"] = page_sha(existing[n])
+        if turns.get(n):
+            pj["rotate"] = turns[n]          # the word boxes are on the page turned this way
         js["pages"][str(n)] = pj
         done += 1
         # write after every page so a crash/cancel loses nothing

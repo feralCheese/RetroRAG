@@ -41,6 +41,13 @@ def _region(region) -> tuple[float, float, float, float] | None:
     return x0, y0, x1, y1
 
 
+def _scanned_box(box, turn: int):
+    """A region of a page as shown turned `turn` degrees clockwise -> the same region of the page as scanned."""
+    u0, v0, u1, v1 = box
+    return {90: (v0, 1 - u1, v1, 1 - u0), 180: (1 - u1, 1 - v1, 1 - u0, 1 - v0),
+            270: (1 - v1, u0, 1 - v0, u1)}.get(turn, box)
+
+
 def _fit(w: int, h: int) -> float:
     return min(1.0, MAX_SIDE / max(w, h), math.sqrt(MAX_PIXELS / max(1, w * h)))
 
@@ -53,6 +60,8 @@ def render(lib: Library, d: Document, page: int = 1, region=None) -> tuple[bytes
                            if d else "No such document")
     box = _region(region)
     src = lib.abspath(d.path)
+    from .ocr import page_rotations, upright
+    turn = page_rotations(lib, d).get(page, 0)          # a page the user turned the right way up
     if not src.exists():
         raise PictureError(f"The file for '{d.title}' is missing ({src.name})")
     if d.kind == "pdf":
@@ -63,14 +72,17 @@ def render(lib: Library, d: Document, page: int = 1, region=None) -> tuple[bytes
                 raise PictureError(f"'{d.title}' has {pages} page(s); page {page} doesn't exist")
             pg = doc[page - 1]
             r = pg.rect
-            clip = r if not box else pymupdf.Rect(r.x0 + box[0] * r.width, r.y0 + box[1] * r.height,
-                                                   r.x0 + box[2] * r.width, r.y0 + box[3] * r.height)
+            b = _scanned_box(box, turn) if box else None
+            clip = r if not b else pymupdf.Rect(r.x0 + b[0] * r.width, r.y0 + b[1] * r.height,
+                                                 r.x0 + b[2] * r.width, r.y0 + b[3] * r.height)
             longest = max(clip.width, clip.height)
             cap = max(MAX_PDF_DPI / 72, MIN_ZOOM_SIDE / longest) if box else MAX_PDF_DPI / 72
             zoom = min(cap, MAX_SIDE / longest, math.sqrt(MAX_PIXELS / max(1.0, clip.width * clip.height)))
             pix = pg.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), clip=clip, alpha=False)
-            im = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+            im = upright(Image.frombytes("RGB", (pix.width, pix.height), pix.samples), turn)
             full = (round(r.width / 72 * 300), round(r.height / 72 * 300))      # its size scanned at 300 dpi
+            if turn in (90, 270):
+                full = full[::-1]
     else:
         with Image.open(src) as f:
             pages = getattr(f, "n_frames", 1)
@@ -86,7 +98,7 @@ def render(lib: Library, d: Document, page: int = 1, region=None) -> tuple[bytes
                 im = im.convert("RGBA")
                 bg = Image.new("RGBA", im.size, (255, 255, 255, 255))
                 im = Image.alpha_composite(bg, im)
-            im = im.convert("RGB")
+            im = upright(im.convert("RGB"), turn)
             full = im.size
             if box:
                 w, h = im.size

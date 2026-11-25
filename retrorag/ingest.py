@@ -183,6 +183,9 @@ def adopt_existing_text(lib: Library, d: Document, log: Callable[[str], None] = 
     md, js = lib.derived_md_path(d), lib.ocr_json_path(d)
     if not (md.exists() and js.exists()):
         return False
+    from .ocr import load_ocr_json
+    if not load_ocr_json(lib, d).get("pages"):     # only pages turned the right way up, no OCR yet
+        return False
     from .textutil import count_markers
     text = md.read_text("utf-8")
     pages = 0

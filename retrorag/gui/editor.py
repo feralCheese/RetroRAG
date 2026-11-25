@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QFrame, QMenu, QToolButton,
 from ..library import Document, Library, now_iso
 from . import theme
 from ..align import align, page_tokens, token_at
-from ..ocr import is_graphic_word, load_ocr_json, reference_height, render_page
+from ..ocr import is_graphic_word, load_ocr_json, page_rotations, reference_height, render_page, set_page_rotation
 from ..textutil import COMMENT_LINE_RE, MARKER_RE, PAGE_RE, count_markers, pages_needing_ocr, strip_markers
 
 PSM_SHORT = {3: "Layout: auto", 4: "Single column", 6: "Uniform block", 11: "Sparse text", 12: "Sparse + rotate",
@@ -291,7 +291,7 @@ class ProofEditor(QWidget):
     def __init__(self, lib: Library, doc: Document, font_size: int = 11):
         super().__init__()
         self.lib, self.doc = lib, doc
-        self.ocr = load_ocr_json(lib, doc)
+        self._load_ocr()
         self.threshold = int(self.ocr.get("threshold", lib.settings.low_conf_threshold))
         self.cur_page = None
         self._last_loc = None
@@ -472,6 +472,25 @@ class ProofEditor(QWidget):
             self._icons.append((self.reocr_action, "refresh"))
             stb.addWidget(self.reocr_btn)
             self._update_reocr_label()
+            # Rotate: icon only, by the zoom buttons (the toolbar is narrow); a menu of turns
+            self.rotate_btn = QToolButton()
+            self.rotate_action = QAction("Rotate", self)
+            self.rotate_action.setToolTip("Rotate this page: turn it the right way up and OCR it again. "
+                                          "The original file isn't changed.")
+            self._icons.append((self.rotate_action, "rotate"))
+            self.rotate_btn.setDefaultAction(self.rotate_action)
+            self.rotate_btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
+            rm = QMenu(self.rotate_btn)
+            rm.addAction("Turn clockwise  ↻", lambda: self.rotate_page(90))
+            rm.addAction("Turn anticlockwise  ↺", lambda: self.rotate_page(270))
+            rm.addAction("Turn upside down", lambda: self.rotate_page(180))
+            rm.addSeparator()
+            self.unrotate_action = rm.addAction("Back as scanned", lambda: self.rotate_page(None))
+            rm.aboutToShow.connect(lambda: self.unrotate_action.setEnabled(
+                bool(self.turns.get(self.cur_page or 1))))
+            self.rotate_btn.setMenu(rm)
+            self.rotate_btn.setPopupMode(QToolButton.InstantPopup)
+            stb.insertWidget(self.a_spot, self.rotate_btn)
         tb.addSeparator()
         self.a_reviewed = act("Mark reviewed", self.mark_reviewed, None, "Mark this text as proofread", "accept")
         self.flag_label = QLabel()
@@ -556,10 +575,14 @@ class ProofEditor(QWidget):
             self.busy.show_busy(text)
             self.text.setReadOnly(True)
             self.rest_btn.setEnabled(False)
+            if hasattr(self, "rotate_btn"):
+                self.rotate_btn.setEnabled(False)
         else:
             self.busy.clear()
             self.text.setReadOnly(not self.editable)
             self.rest_btn.setEnabled(True)
+            if hasattr(self, "rotate_btn"):
+                self.rotate_btn.setEnabled(True)
 
     # ------------------------------------------------------------------ OCR noise
     def delete_garbage_lines(self):
@@ -751,6 +774,42 @@ class ProofEditor(QWidget):
         self._update_count()
         self.saved.emit(self.doc.id)
 
+    def _load_ocr(self):
+        """The OCR record, without word boxes read with a page turned another way (a page turned since its
+        OCR: its boxes would land in the wrong places until it's OCR'd again)."""
+        self.ocr = load_ocr_json(self.lib, self.doc)
+        self.turns = page_rotations(self.lib, self.doc, self.ocr)
+        pages = self.ocr.get("pages") or {}
+        self.ocr["pages"] = {k: v for k, v in pages.items()
+                             if not k.isdigit() or int(v.get("rotate") or 0) == self.turns.get(int(k), 0)}
+
+    def rotate_page(self, degrees: int | None):
+        """Turn the current page `degrees` clockwise (None: back as scanned), show it turned, and OCR it again -
+        unless its text is the PDF's own (not OCR), which turning the picture doesn't change."""
+        n = self.cur_page or 1
+        if self.is_dirty():
+            self.save()
+        was = self.turns.get(n, 0)
+        turn = 0 if degrees is None else (was + degrees) % 360
+        if turn == was:
+            return
+        from ..textutil import split_pages
+        body = next((b for p, b in split_pages(self.text.toPlainText()) if p == n), "")
+        ocrd = str(n) in (load_ocr_json(self.lib, self.doc).get("pages") or {})
+        reread = self.doc.kind == "image" or ocrd or "<!-- no text layer" in body or not body.strip()
+        set_page_rotation(self.lib, self.doc, n, turn)
+        self._load_ocr()
+        self._img_cache.pop(n, None)
+        self._align_cache.pop(n, None)
+        self.cur_page = None
+        self.goto_page(n)
+        if reread and hasattr(self, "_psm_group"):
+            self.request_reocr.emit(self.doc.id, n, int(self._psm_group.checkedAction().data()),
+                                    self._clean_group.checkedAction().data())
+        else:
+            self.saved_lbl.setText("Turned. Its text is the PDF's own - Re-OCR reads it instead")
+            QTimer.singleShot(5000, lambda: self.saved_lbl.setText(""))
+
     def reocr_page(self):
         if self.is_dirty():
             self.save()
@@ -770,7 +829,7 @@ class ProofEditor(QWidget):
     def reload_after_ocr(self):
         page = self.cur_page
         self.doc = self.lib.document(self.doc.id)
-        self.ocr = load_ocr_json(self.lib, self.doc)
+        self._load_ocr()
         self.editable = bool(self.doc.text_path) and self.doc.text_path != self.doc.path
         self.text.setReadOnly(not self.editable)
         self.a_save.setEnabled(self.editable)
