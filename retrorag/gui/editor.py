@@ -116,6 +116,43 @@ class MarkerHighlighter(QSyntaxHighlighter):
             self.setFormat(m.start(1), len(m.group(1)), word)
 
 
+class ProofText(QPlainTextEdit):
+    """The text side of the editor. Qt draws the text cursor in the theme's text colour, which all but vanishes on
+    the pale background of a flagged word in a dark theme, so over a flagged word it's drawn again, in the same
+    place and blink, in that word's own text colour."""
+
+    def __init__(self):
+        super().__init__()
+        self.setCursorWidth(2)
+
+    def caret_color(self) -> QColor | None:
+        """The text colour of the flagged word the cursor is in, or None when it isn't on a coloured background."""
+        c = self.textCursor()
+        layout = c.block().layout()
+        pos = c.positionInBlock()
+        for r in (layout.formats() if layout else []):
+            if r.start <= pos < r.start + r.length and r.format.background().style() != Qt.NoBrush:
+                return r.format.foreground().color()
+        return None
+
+    def paintEvent(self, e) -> None:
+        super().paintEvent(e)
+        if self.getPaintContext().cursorPosition < 0 or self.overwriteMode():
+            return                      # blinked off, not focused, or typing in an input method
+        if self.isReadOnly() and not self.textInteractionFlags() & Qt.TextSelectableByKeyboard:
+            return
+        col = self.caret_color()
+        if col is None:
+            return
+        c = self.textCursor()
+        block = c.block()
+        p = QPainter(self.viewport())
+        p.setPen(QPen(col))
+        block.layout().drawCursor(p, self.blockBoundingGeometry(block).translated(self.contentOffset()).topLeft(),
+                                  c.positionInBlock(), self.cursorWidth())
+        p.end()
+
+
 class PageView(QGraphicsView):
     clicked = Signal(float, float)   # in OCR-image coordinates
 
@@ -334,7 +371,7 @@ class ProofEditor(QWidget):
         stb.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         stb.setIconSize(QSize(16, 16))
 
-        self.text = QPlainTextEdit()
+        self.text = ProofText()
         self._font_size = font_size
         self.text.setFont(theme.mono_font(font_size))
         self.text.setLineWrapMode(QPlainTextEdit.WidgetWidth)
